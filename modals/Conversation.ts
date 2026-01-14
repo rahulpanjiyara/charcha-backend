@@ -28,8 +28,16 @@ const ConversationSchema = new Schema<ConversationProps>(
       type: String,
       default: "",
     },
+    deletedFor: {
+      type: [Schema.Types.ObjectId],
+      default: [],
+    }
   },
   { timestamps: true }
+);
+ConversationSchema.index(
+  { type: 1, participants: 1 },
+  { unique: true }
 );
 
 export default model<ConversationProps>("Conversation", ConversationSchema);

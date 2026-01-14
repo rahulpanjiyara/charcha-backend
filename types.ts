@@ -18,4 +18,5 @@ export interface ConversationProps extends Document {
   avatar?: string;
   createdAt: Date;
   updatedAt: Date;
+  deletedFor:Types.ObjectId[]
 }

@@ -17,7 +17,10 @@ export function registerChatEvents(socket: Socket, io: SocketIoServer) {
             }
             //find all conversations where user is a participant
             const converstions = await Conversation.find({
-                participants: userId
+                // participants: userId
+                participants: userId,
+                deletedFor: { $ne: userId },
+
             }
 
             ).sort({ updatedAt: -1 }
@@ -53,13 +56,45 @@ export function registerChatEvents(socket: Socket, io: SocketIoServer) {
                     type: 'direct',
                     participants: { $all: data.participants, $size: 2 }
                 }).populate({ path: "participants", select: "name avatar email" }).lean();
+                // if (existingConversation) {
+                //     socket.emit("newConversation", {
+                //         success: true,
+                //         data: { ...existingConversation, isNew: false }
+                //     });
+                //     return;
+                // }
                 if (existingConversation) {
-                    socket.emit("newConversation", {
-                        success: true,
-                        data: { ...existingConversation, isNew: false }
+                    // revive conversation for both users
+                    const revivedConversation = await Conversation.findByIdAndUpdate(
+                        existingConversation._id,
+                        {
+                            $pull: { deletedFor: { $in: data.participants } },
+                        },
+                        { new: true }
+                    )
+                        .populate({ path: "participants", select: "name avatar email" })
+                        .lean();
+
+                    if (!revivedConversation) return;
+
+                    // find online participant sockets
+                    const connectedSockets = Array.from(io.sockets.sockets.values())
+                        .filter(s => data.participants.includes(s.data.userId));
+
+                    // join room + emit to BOTH users
+                    connectedSockets.forEach(participantSocket => {
+                        participantSocket.join(revivedConversation._id.toString());
+
+                        participantSocket.emit("newConversation", {
+                            success: true,
+                            data: { ...revivedConversation, isNew: true },
+                        });
                     });
+
                     return;
                 }
+
+
             }
             //create a new conversation
             const conversation = await Conversation.create({
@@ -205,8 +240,13 @@ export function registerChatEvents(socket: Socket, io: SocketIoServer) {
             // Delete all messages of this conversation
             await Message.deleteMany({ conversationId });
 
-            // Delete the conversation
-            await Conversation.findByIdAndDelete(conversationId);
+            // // Delete the conversation
+            // await Conversation.findByIdAndDelete(conversationId);
+
+            await Conversation.findByIdAndUpdate(conversationId, {
+                $addToSet: { deletedFor: userId },
+            });
+
 
             // Notify the user that conversation was deleted
             socket.emit("deleteConversation", {
@@ -222,7 +262,12 @@ export function registerChatEvents(socket: Socket, io: SocketIoServer) {
                 const participantSocket = Array.from(io.sockets.sockets.values()).find(
                     (s) => s.data.userId.toString() === participantId.toString()
                 );
-                participantSocket?.emit("deleteConversation", { conversationId });
+                //participantSocket?.emit("deleteConversation", { conversationId });
+                participantSocket?.emit("deleteConversation", {
+                    success: true,
+                    data: { conversationId },
+                });
+
             });
         } catch (error) {
             console.log("deleteConversation error:", error);
@@ -234,37 +279,37 @@ export function registerChatEvents(socket: Socket, io: SocketIoServer) {
     });
 
     socket.on("deleteMessage", async (data: { conversationId: string; messageId: string }) => {
-  try {
-    const userId = socket.data.userId;
-    const { conversationId, messageId } = data;
+        try {
+            const userId = socket.data.userId;
+            const { conversationId, messageId } = data;
 
-    if (!userId || !conversationId || !messageId) {
-      socket.emit("deleteMessage", { success: false, msg: "Invalid request" });
-      return;
-    }
+            if (!userId || !conversationId || !messageId) {
+                socket.emit("deleteMessage", { success: false, msg: "Invalid request" });
+                return;
+            }
 
-    const message = await Message.findById(messageId);
+            const message = await Message.findById(messageId);
 
-    if (!message) {
-      socket.emit("deleteMessage", { success: false, msg: "Message not found" });
-      return;
-    }
+            if (!message) {
+                socket.emit("deleteMessage", { success: false, msg: "Message not found" });
+                return;
+            }
 
-    if (message.senderId.toString() !== userId) {
-      socket.emit("deleteMessage", { success: false, msg: "Not allowed" });
-      return;
-    }
+            if (message.senderId.toString() !== userId) {
+                socket.emit("deleteMessage", { success: false, msg: "Not allowed" });
+                return;
+            }
 
-    await Message.findByIdAndDelete(messageId);
+            await Message.findByIdAndDelete(messageId);
 
-    // Notify all participants
-    io.to(conversationId).emit("deleteMessage", { success: true, messageId });
+            // Notify all participants
+            io.to(conversationId).emit("deleteMessage", { success: true, messageId });
 
-  } catch (err) {
-    console.log("deleteMessage error:", err);
-    socket.emit("deleteMessage", { success: false, msg: "Failed to delete message" });
-  }
-});
+        } catch (err) {
+            console.log("deleteMessage error:", err);
+            socket.emit("deleteMessage", { success: false, msg: "Failed to delete message" });
+        }
+    });
 
 
 

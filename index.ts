@@ -10,24 +10,40 @@ dotenv.config();
 
 const app = express();
 const server = http.createServer(app);
+
+// IMPORTANT: Render provides PORT dynamically
 const PORT = process.env.PORT || 3000;
 
-app.use(cors());
+/* -------------------- MIDDLEWARES -------------------- */
+app.use(
+  cors({
+    origin: "*", // later restrict to frontend URL
+    credentials: true,
+  })
+);
 app.use(express.json());
-app.use('/auth',router)
 
-app.get("/", (req, res) => {
-  res.send("Server is running Dear");
+/* -------------------- ROUTES -------------------- */
+app.use("/auth", router);
+
+app.get("/", (_req, res) => {
+  res.send("Server is running 🚀");
 });
-//listen to socket connections
+
+/* -------------------- SOCKET.IO -------------------- */
 initializeSocket(server);
 
-connectDB().then(() => {
-  server.listen(PORT, () => {
-  console.log(`Server is running on port ${PORT}`);
-});
-}).catch((error) => {
-  console.log("Failed to start server due to database connection error: ", error);
-  
-});
-
+/* -------------------- START SERVER -------------------- */
+connectDB()
+  .then(() => {
+    server.listen(PORT, () => {
+      console.log(`✅ Server running on port ${PORT}`);
+    });
+  })
+  .catch((error) => {
+    console.error(
+      "❌ Failed to start server due to DB connection error:",
+      error
+    );
+    process.exit(1);
+  });
