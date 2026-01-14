@@ -3,11 +3,7 @@ import User from "../modals/User.js";
 import { generateToken } from "../utils/token.js";
 
 export function registerUserEvents(socket: Socket, io: SocketIoServer) {
-    //Test Event
-    socket.on('testSocket', (data: any) => {
-        socket.emit('testSocket', { msg: 'Its working dear' });
-    });
-
+  
     socket.on("updateProfile", async (data: { name?: string; avatar?: string }) => {
         //console.log('updateprofile event', data);
 
