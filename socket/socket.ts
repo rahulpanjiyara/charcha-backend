@@ -6,6 +6,7 @@ import jwt from "jsonwebtoken";
 import Conversation from "../modals/Conversation.js";
 import { registerUserEvents } from "./userEvents.js";
 import { registerChatEvents } from "./chatEvents.js";
+import { registerCallEvents } from "./callEvents.js";
 
 export function initializeSocket(server: any): SocketIoServer {
   const io = new SocketIoServer(server, {
@@ -55,6 +56,7 @@ export function initializeSocket(server: any): SocketIoServer {
     // drop their first getConversations/getMessages request.
     registerUserEvents(socket, io);
     registerChatEvents(socket, io);
+    registerCallEvents(socket, io);
     io.emit("presenceChanged", { userId: String(userId), online: true });
 
     /* =======================
