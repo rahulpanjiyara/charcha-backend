@@ -1,0 +1,27 @@
+services:
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: charcha-backend:latest
+    container_name: charcha-backend
+    restart: unless-stopped
+    init: true
+    ports:
+      - "127.0.0.1:${HOST_PORT:-3003}:3000"
+    environment:
+      NODE_ENV: production
+      PORT: 3000
+      MONGO_URL: "${MONGO_URL:?MONGO_URL is required}"
+      JWT_SECRET: "${JWT_SECRET:?JWT_SECRET is required}"
+      CORS_ORIGIN: "${CORS_ORIGIN:-*}"
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - "fetch('http://127.0.0.1:3000/health').then(r => { if (!r.ok) process.exit(1) }).catch(() => process.exit(1))"
+      interval: 30s
+      timeout: 5s
+      start_period: 20s
+      retries: 3

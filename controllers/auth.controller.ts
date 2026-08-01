@@ -7,8 +7,18 @@ import { generateToken } from "../utils/token.js";
 
 
 export const registerUser = async (req: Request, res: Response): Promise<void> => {
-    // Registration logic here
-    const { email, password, name, avatar } = req.body;
+    const email = String(req.body?.email || "").trim().toLowerCase();
+    const password = String(req.body?.password || "");
+    const name = String(req.body?.name || "").trim();
+    const avatar = typeof req.body?.avatar === "string" ? req.body.avatar : "";
+
+    if (!name || !/^\S+@\S+\.\S+$/.test(email) || password.length < 8) {
+        res.status(400).json({
+            success: false,
+            message: "Enter a valid name and email, and use at least 8 password characters",
+        });
+        return;
+    }
     try {
         let user = await User.findOne({ email });
         if (user) {
@@ -34,19 +44,28 @@ export const registerUser = async (req: Request, res: Response): Promise<void> =
             token
         })
 
-    } catch (error) {
+    } catch (error: any) {
         console.log('Error in user registration:', error);
+        if (error?.code === 11000) {
+            res.status(409).json({ success: false, message: "User already exists" });
+            return;
+        }
         res.status(500).json({ message: "Server error" });
     }
 };
 
 export const loginUser = async (req: Request, res: Response): Promise<void> => {
-    const { email, password } = req.body;
+    const email = String(req.body?.email || "").trim().toLowerCase();
+    const password = String(req.body?.password || "");
+    if (!email || !password) {
+        res.status(400).json({ success: false, message: "Email and password are required" });
+        return;
+    }
     try {
         //find the user by email
         const user = await User.findOne({ email });
         if (!user) {
-            res.status(400).json({ success: false, message: "User does not exist" });
+            res.status(401).json({ success: false, message: "Invalid email or password" });
             return;
         }
 
@@ -54,7 +73,7 @@ export const loginUser = async (req: Request, res: Response): Promise<void> => {
         const isMatch = await bcrypt.compare(password, user.password);
 
         if (!isMatch) {
-            res.status(400).json({ success: false, message: "Invalid credentials" });
+            res.status(401).json({ success: false, message: "Invalid email or password" });
             return;
         }
         //generate token

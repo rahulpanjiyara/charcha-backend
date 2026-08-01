@@ -21,6 +21,24 @@ const userSchema = new Schema<UserProps>({
         type:String,
         default:'',
     },
+    about:{
+        type:String,
+        default:'',
+        trim:true,
+        maxlength:300,
+    },
+    status:{
+        type:String,
+        default:'Available',
+        trim:true,
+        maxlength:80,
+    },
+    mobile:{
+        type:String,
+        default:'',
+        trim:true,
+        maxlength:24,
+    },
     created:{
         type:Date,
         default:Date.now,

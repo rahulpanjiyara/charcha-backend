@@ -1,0 +1,57 @@
+name: Verify and deploy backend
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: charcha-backend-production
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v5
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Compile TypeScript
+        run: npm run build
+
+      - name: Validate production image
+        run: docker build --tag charcha-backend:${{ github.sha }} .
+
+  deploy:
+    needs: verify
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v5
+
+      - name: Deploy through the Hostinger API
+        uses: hostinger/deploy-on-vps@v2
+        with:
+          api-key: ${{ secrets.HOSTINGER_API_KEY }}
+          virtual-machine: ${{ vars.HOSTINGER_VM_ID }}
+          project-name: charcha-backend
+          docker-compose-path: docker-compose.yml
+          environment-variables: |
+            HOST_PORT=3003
+            MONGO_URL=${{ secrets.MONGO_URL }}
+            JWT_SECRET=${{ secrets.JWT_SECRET }}
+            CORS_ORIGIN=${{ vars.CORS_ORIGIN }}

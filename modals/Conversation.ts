@@ -35,9 +35,6 @@ const ConversationSchema = new Schema<ConversationProps>(
   },
   { timestamps: true }
 );
-ConversationSchema.index(
-  { type: 1, participants: 1 },
-  { unique: true }
-);
+ConversationSchema.index({ participants: 1, updatedAt: -1 });
 
 export default model<ConversationProps>("Conversation", ConversationSchema);

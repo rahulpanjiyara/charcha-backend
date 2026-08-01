@@ -50,6 +50,13 @@ export function initializeSocket(server: any): SocketIoServer {
 
     console.log(`🟢 User connected: ${userId}`);
 
+    // Register handlers before awaiting any database work. Clients may emit
+    // immediately after the Socket.IO `connect` event, so delaying this would
+    // drop their first getConversations/getMessages request.
+    registerUserEvents(socket, io);
+    registerChatEvents(socket, io);
+    io.emit("presenceChanged", { userId: String(userId), online: true });
+
     /* =======================
        JOIN ACTIVE CONVERSATIONS
        ======================= */
@@ -71,16 +78,16 @@ export function initializeSocket(server: any): SocketIoServer {
     }
 
     /* =======================
-       REGISTER EVENTS
-       ======================= */
-    registerUserEvents(socket, io);
-    registerChatEvents(socket, io);
-
-    /* =======================
        DISCONNECT
        ======================= */
     socket.on("disconnect", () => {
       console.log(`🔴 User disconnected: ${userId}`);
+      const hasAnotherConnection = Array.from(io.sockets.sockets.values()).some(
+        (client) => client.id !== socket.id && client.connected && String(client.data.userId) === String(userId)
+      );
+      if (!hasAnotherConnection) {
+        io.emit("presenceChanged", { userId: String(userId), online: false });
+      }
     });
   });
 
