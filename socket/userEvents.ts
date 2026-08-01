@@ -190,21 +190,31 @@ export function registerUserEvents(socket: Socket, io: SocketIoServer) {
                 }).lean(),
                 User.find({ _id: { $ne: userId } }, { password: 0 }).lean(),
                 Conversation.find({ type: "direct", participants: userId, deletedFor: { $ne: userId } })
-                    .select("_id participants")
+                    .select("_id participants clearedAtBy")
                     .lean(),
             ]);
 
             const directConversationIds = directConversations.map((conversation) => conversation._id);
-            const unreadGroups = directConversationIds.length ? await Message.aggregate([
-                {
-                    $match: {
-                        conversationId: { $in: directConversationIds },
+            const unreadGroups = directConversationIds.length ? await Promise.all(
+                directConversations.map(async (conversation: any) => {
+                    const stored = conversation.clearedAtBy instanceof Map
+                        ? conversation.clearedAtBy.get(userId)
+                        : conversation.clearedAtBy?.[userId];
+                    const clearedAt = stored ? new Date(stored) : null;
+                    const count = await Message.countDocuments({
+                        conversationId: conversation._id,
                         senderId: { $ne: new Types.ObjectId(userId) },
                         readBy: { $exists: true, $ne: new Types.ObjectId(userId) },
-                    },
-                },
-                { $group: { _id: "$conversationId", count: { $sum: 1 } } },
-            ]) : [];
+                        ...(clearedAt ? { createdAt: { $gt: clearedAt } } : {}),
+                        $or: [
+                            { expiresAt: null },
+                            { expiresAt: { $exists: false } },
+                            { expiresAt: { $gt: new Date() } },
+                        ],
+                    });
+                    return { _id: conversation._id, count };
+                })
+            ) : [];
             const unreadByConversation = new Map(unreadGroups.map((item) => [item._id.toString(), item.count]));
             const unreadByFriend = new Map<string, number>();
             for (const conversation of directConversations) {

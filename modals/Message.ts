@@ -18,11 +18,16 @@ const messageSchema = new mongoose.Schema({
         type:mongoose.Schema.Types.ObjectId,
         ref:"User",
     }],
+    expiresAt: {
+        type: Date,
+        default: null,
+    },
 
 },{
     timestamps:true,
 });
 messageSchema.index({ conversationId: 1, createdAt: -1 });
 messageSchema.index({ conversationId: 1, readBy: 1, senderId: 1 });
+messageSchema.index({ expiresAt: 1 }, { expireAfterSeconds: 0 });
 const Message = mongoose.model("Message",messageSchema);
 export default Message;
