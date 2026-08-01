@@ -12,11 +12,6 @@ Add these repository secrets:
 - `MONGO_URL`: the production MongoDB connection string
 - `JWT_SECRET`: a long, random production signing secret
 
-Add these repository variables:
-
-- `HOSTINGER_VM_ID`: `1301354`
-- `CORS_ORIGIN`: `*` for the Expo mobile app, or a comma-separated allow-list when a web client is added
-
 The repository must be public for a completely SSH-free deployment with Hostinger's official action. Hostinger requires a GitHub SSH deploy key when it needs to fetch a private repository.
 
 ## Deployment

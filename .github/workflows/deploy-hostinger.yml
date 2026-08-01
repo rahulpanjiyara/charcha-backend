@@ -47,11 +47,11 @@ jobs:
         uses: hostinger/deploy-on-vps@v2
         with:
           api-key: ${{ secrets.HOSTINGER_API_KEY }}
-          virtual-machine: ${{ vars.HOSTINGER_VM_ID }}
+          virtual-machine: 1301354
           project-name: charcha-backend
           docker-compose-path: docker-compose.yml
           environment-variables: |
             HOST_PORT=3003
             MONGO_URL=${{ secrets.MONGO_URL }}
             JWT_SECRET=${{ secrets.JWT_SECRET }}
-            CORS_ORIGIN=${{ vars.CORS_ORIGIN }}
+            CORS_ORIGIN=*
