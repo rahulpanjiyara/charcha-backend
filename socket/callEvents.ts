@@ -8,7 +8,7 @@ type PendingCall = {
   conversationId: string;
   callerId: string;
   calleeId: string;
-  roomName: string;
+  accepted: boolean;
   timeout: NodeJS.Timeout;
 };
 
@@ -48,7 +48,6 @@ export function registerCallEvents(socket: Socket, io: SocketIoServer) {
 
       const caller = await User.findById(callerId).select("name avatar").lean();
       const callId = randomUUID();
-      const roomName = `charcha-${randomUUID()}`;
       const timeout = setTimeout(() => {
         const call = pendingCalls.get(callId);
         if (!call) return;
@@ -62,7 +61,7 @@ export function registerCallEvents(socket: Socket, io: SocketIoServer) {
         conversationId: conversation._id.toString(),
         callerId,
         calleeId,
-        roomName,
+        accepted: false,
         timeout,
       });
 
@@ -97,13 +96,39 @@ export function registerCallEvents(socket: Socket, io: SocketIoServer) {
       return;
     }
 
-    const payload = {
+    call.accepted = true;
+    emitToUser(io, call.callerId, "callAccepted", {
       callId: call.callId,
       conversationId: call.conversationId,
-      roomUrl: `https://meet.jit.si/${call.roomName}`,
-    };
-    emitToUser(io, call.callerId, "callAccepted", payload);
-    emitToUser(io, call.calleeId, "callAccepted", payload);
+      isInitiator: true,
+    });
+    emitToUser(io, call.calleeId, "callAccepted", {
+      callId: call.callId,
+      conversationId: call.conversationId,
+      isInitiator: false,
+    });
+  });
+
+  socket.on("webrtcSignal", (data: {
+    callId?: string;
+    type?: "offer" | "answer" | "ice";
+    payload?: unknown;
+  }) => {
+    const call = data?.callId ? pendingCalls.get(data.callId) : null;
+    const userId = String(socket.data.userId);
+    if (
+      !call ||
+      !call.accepted ||
+      (call.callerId !== userId && call.calleeId !== userId) ||
+      !["offer", "answer", "ice"].includes(data.type || "")
+    ) return;
+
+    const otherUserId = call.callerId === userId ? call.calleeId : call.callerId;
+    emitToUser(io, otherUserId, "webrtcSignal", {
+      callId: call.callId,
+      type: data.type,
+      payload: data.payload,
+    });
   });
 
   socket.on("endVideoCall", (data: { callId?: string }) => {
@@ -115,5 +140,16 @@ export function registerCallEvents(socket: Socket, io: SocketIoServer) {
     const otherUserId = call.callerId === userId ? call.calleeId : call.callerId;
     emitToUser(io, otherUserId, "callEnded", { callId: call.callId, reason: "Call ended" });
     pendingCalls.delete(call.callId);
+  });
+
+  socket.on("disconnect", () => {
+    const userId = String(socket.data.userId);
+    for (const call of pendingCalls.values()) {
+      if (call.callerId !== userId && call.calleeId !== userId) continue;
+      clearTimeout(call.timeout);
+      const otherUserId = call.callerId === userId ? call.calleeId : call.callerId;
+      emitToUser(io, otherUserId, "callEnded", { callId: call.callId, reason: "Connection lost" });
+      pendingCalls.delete(call.callId);
+    }
   });
 }
