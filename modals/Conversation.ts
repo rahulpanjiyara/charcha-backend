@@ -31,7 +31,17 @@ const ConversationSchema = new Schema<ConversationProps>(
     deletedFor: {
       type: [Schema.Types.ObjectId],
       default: [],
-    }
+    },
+    disappearingMessagesSeconds: {
+      type: Number,
+      enum: [0, 3600, 86400, 604800, 2592000],
+      default: 0,
+    },
+    clearedAtBy: {
+      type: Map,
+      of: Date,
+      default: {},
+    },
   },
   { timestamps: true }
 );

@@ -5,6 +5,28 @@ import Message from "../modals/Message.js";
 import User from "../modals/User.js";
 import FriendRequest from "../modals/FriendRequest.js";
 
+const disappearingDurations = new Set([0, 3600, 86400, 604800, 2592000]);
+const visibleMessageFilter = () => ({
+  $or: [{ expiresAt: null }, { expiresAt: { $exists: false } }, { expiresAt: { $gt: new Date() } }],
+});
+
+function clearedAtFor(conversation: any, userId: string): Date | null {
+  const stored = conversation?.clearedAtBy instanceof Map
+    ? conversation.clearedAtBy.get(userId)
+    : conversation?.clearedAtBy?.[userId];
+  if (!stored) return null;
+  const value = new Date(stored);
+  return Number.isNaN(value.getTime()) ? null : value;
+}
+
+function visibleToUserFilter(conversation: any, userId: string) {
+  const clearedAt = clearedAtFor(conversation, userId);
+  return {
+    ...visibleMessageFilter(),
+    ...(clearedAt ? { createdAt: { $gt: clearedAt } } : {}),
+  };
+}
+
 const fail = (socket: Socket, event: string, msg: string) =>
   socket.emit(event, { success: false, msg });
 
@@ -16,15 +38,19 @@ async function memberConversation(conversationId: unknown, userId: string) {
 }
 
 async function unreadCountFor(userId: string) {
-  const conversationIds = await Conversation.find({
+  const conversations = await Conversation.find({
     participants: userId,
     deletedFor: { $ne: userId },
-  }).distinct("_id");
-  return Message.countDocuments({
-    conversationId: { $in: conversationIds },
-    senderId: { $ne: userId },
-    readBy: { $exists: true, $ne: userId },
-  });
+  }).select("_id clearedAtBy").lean();
+  const counts = await Promise.all(conversations.map((conversation) =>
+    Message.countDocuments({
+      conversationId: conversation._id,
+      senderId: { $ne: userId },
+      readBy: { $exists: true, $ne: userId },
+      ...visibleToUserFilter(conversation, userId),
+    })
+  ));
+  return counts.reduce((total, count) => total + count, 0);
 }
 
 function notifyUnreadChanged(io: SocketIoServer, userIds: string[]) {
@@ -64,14 +90,22 @@ export function registerChatEvents(socket: Socket, io: SocketIoServer) {
         .populate("participants", "name avatar email")
         .lean();
 
-      const data = await Promise.all(conversations.map(async (conversation: any) => ({
-        ...conversation,
-        unreadCount: await Message.countDocuments({
+      const data = await Promise.all(conversations.map(async (conversation: any) => {
+        const clearedAt = clearedAtFor(conversation, String(userId));
+        const lastMessage = conversation.lastMessage as any;
+        const lastMessageVisible = !clearedAt || !lastMessage?.createdAt ||
+          new Date(lastMessage.createdAt).getTime() > clearedAt.getTime();
+        return {
+          ...conversation,
+          lastMessage: lastMessageVisible ? lastMessage : null,
+          unreadCount: await Message.countDocuments({
           conversationId: conversation._id,
           senderId: { $ne: userId },
           readBy: { $exists: true, $ne: userId },
+          ...visibleToUserFilter(conversation, String(userId)),
         }),
-      })));
+        };
+      }));
       socket.emit("getConversations", { success: true, data });
     } catch (error) {
       console.error("getConversations error", error);
@@ -138,6 +172,14 @@ export function registerChatEvents(socket: Socket, io: SocketIoServer) {
             .populate("lastMessage", "content senderId attachment createdAt")
             .populate("participants", "name avatar email")
             .lean();
+          if (revived) {
+            const clearedAt = clearedAtFor(revived, userId);
+            const lastMessage = revived.lastMessage as any;
+            if (clearedAt && lastMessage?.createdAt &&
+              new Date(lastMessage.createdAt).getTime() <= clearedAt.getTime()) {
+              revived.lastMessage = undefined;
+            }
+          }
           socket.join(existing._id.toString());
           socket.emit("newConversation", { success: true, data: revived });
           return;
@@ -199,8 +241,12 @@ export function registerChatEvents(socket: Socket, io: SocketIoServer) {
         content,
         attachment,
         readBy: [new Types.ObjectId(userId)],
+        expiresAt: conversation.disappearingMessagesSeconds
+          ? new Date(Date.now() + conversation.disappearingMessagesSeconds * 1000)
+          : null,
       });
       conversation.lastMessage = message._id;
+      conversation.deletedFor = [];
       await conversation.save();
 
       io.to(conversation._id.toString()).emit("newMessage", {
@@ -211,6 +257,7 @@ export function registerChatEvents(socket: Socket, io: SocketIoServer) {
           sender: { id: userId, name: sender.name, avatar: sender.avatar },
           attachment,
           createdAt: message.createdAt,
+          expiresAt: message.expiresAt,
           conversationId: conversation._id.toString(),
         },
       });
@@ -247,12 +294,20 @@ export function registerChatEvents(socket: Socket, io: SocketIoServer) {
       if (!conversation) return fail(socket, "getMessages", "Conversation not found");
 
       await Message.updateMany(
-        { conversationId: conversation._id, senderId: { $ne: userId }, readBy: { $ne: userId } },
+        {
+          conversationId: conversation._id,
+          senderId: { $ne: userId },
+          readBy: { $ne: userId },
+          ...visibleToUserFilter(conversation, userId),
+        },
         { $addToSet: { readBy: userId } }
       );
       notifyUnreadChanged(io, [userId]);
 
-      const messages = await Message.find({ conversationId: conversation._id })
+      const messages = await Message.find({
+        conversationId: conversation._id,
+        ...visibleToUserFilter(conversation, userId),
+      })
         .sort({ createdAt: -1 })
         .limit(100)
         .populate<{ senderId: { _id: string; name: string; avatar: string } }>(
@@ -276,18 +331,78 @@ export function registerChatEvents(socket: Socket, io: SocketIoServer) {
     }
   });
 
-  socket.on("deleteConversation", async (data: { conversationId?: string }) => {
+  socket.on("getConversationSettings", async (data: { conversationId?: string }) => {
+    try {
+      const userId = String(socket.data.userId);
+      const conversation = await memberConversation(data?.conversationId, userId);
+      if (!conversation) return fail(socket, "getConversationSettings", "Conversation not found");
+
+      socket.emit("getConversationSettings", {
+        success: true,
+        data: {
+          conversationId: conversation._id.toString(),
+          disappearingMessagesSeconds: conversation.disappearingMessagesSeconds || 0,
+        },
+      });
+    } catch (error) {
+      console.error("getConversationSettings error", error);
+      fail(socket, "getConversationSettings", "Could not load conversation settings");
+    }
+  });
+
+  socket.on("setDisappearingMessages", async (data: { conversationId?: string; seconds?: number }) => {
+    try {
+      const userId = String(socket.data.userId);
+      const conversation = await memberConversation(data?.conversationId, userId);
+      const seconds = Number(data?.seconds);
+      if (!conversation || !disappearingDurations.has(seconds)) {
+        return fail(socket, "disappearingMessagesChanged", "Invalid disappearing-message setting");
+      }
+
+      conversation.disappearingMessagesSeconds = seconds;
+      await conversation.save();
+      io.to(conversation._id.toString()).emit("disappearingMessagesChanged", {
+        success: true,
+        data: {
+          conversationId: conversation._id.toString(),
+          disappearingMessagesSeconds: seconds,
+          updatedBy: userId,
+        },
+      });
+    } catch (error) {
+      console.error("setDisappearingMessages error", error);
+      fail(socket, "disappearingMessagesChanged", "Could not update disappearing messages");
+    }
+  });
+
+  socket.on("deleteConversation", async (data: { conversationId?: string; mode?: "me" | "everyone" }) => {
     try {
       const userId = String(socket.data.userId);
       const conversation = await memberConversation(data?.conversationId, userId);
       if (!conversation) return fail(socket, "deleteConversation", "Conversation not found");
 
+      if (data.mode === "everyone") {
+        const conversationId = conversation._id.toString();
+        await Message.deleteMany({ conversationId: conversation._id });
+        await conversation.deleteOne();
+        io.to(conversationId).emit("deleteConversation", {
+          success: true,
+          data: { conversationId, mode: "everyone" },
+        });
+        notifyUnreadChanged(
+          io,
+          conversation.participants.map((participantId) => participantId.toString())
+        );
+        return;
+      }
+
       await Conversation.findByIdAndUpdate(conversation._id, {
         $addToSet: { deletedFor: userId },
+        $set: { [`clearedAtBy.${userId}`]: new Date() },
       });
       socket.emit("deleteConversation", {
         success: true,
-        data: { conversationId: conversation._id.toString() },
+        data: { conversationId: conversation._id.toString(), mode: "me" },
       });
     } catch (error) {
       console.error("deleteConversation error", error);
