@@ -212,6 +212,17 @@ export function registerUserEvents(socket: Socket, io: SocketIoServer) {
         }
     });
 
+    socket.on("clearActivities", async () => {
+        try {
+            const userId = String(socket.data.userId);
+            await Activity.deleteMany({ recipient: userId });
+            socket.emit("clearActivities", { success: true });
+        } catch (error) {
+            console.error("clearActivities error", error);
+            socket.emit("clearActivities", { success: false, msg: "Could not clear activity" });
+        }
+    });
+
     socket.on("registerPushToken", async (data: { token?: string }) => {
         try {
             const token = String(data?.token || "").trim();
@@ -693,6 +704,45 @@ export function registerUserEvents(socket: Socket, io: SocketIoServer) {
         } catch (error) {
             console.error("addPostComment error", error);
             socket.emit("addPostComment", { success: false, msg: "Could not add comment" });
+        }
+    });
+
+    socket.on("deletePostComment", async (data: { postId?: string; commentId?: string }) => {
+        try {
+            const userId = String(socket.data.userId);
+            if (!data?.postId || !data?.commentId || !isValidObjectId(data.postId) || !isValidObjectId(data.commentId)) {
+                return socket.emit("deletePostComment", { success: false, msg: "Invalid comment" });
+            }
+
+            const post = await Post.findOne({
+                _id: data.postId,
+                "comments._id": data.commentId,
+                $or: [
+                    { author: userId },
+                    { comments: { $elemMatch: { _id: data.commentId, author: userId } } },
+                ],
+            }).select("author");
+            if (!post) {
+                return socket.emit("deletePostComment", { success: false, msg: "Comment not found or not allowed" });
+            }
+
+            await Post.updateOne(
+                { _id: post._id },
+                { $pull: { comments: { _id: new Types.ObjectId(data.commentId) } } }
+            );
+            socket.emit("deletePostComment", {
+                success: true,
+                data: { postId: data.postId, commentId: data.commentId },
+            });
+
+            const authorId = post.author.toString();
+            const viewers = [authorId, ...(await friendIdsFor(authorId))];
+            for (const client of io.sockets.sockets.values()) {
+                if (viewers.includes(String(client.data.userId))) client.emit("feedChanged", { success: true });
+            }
+        } catch (error) {
+            console.error("deletePostComment error", error);
+            socket.emit("deletePostComment", { success: false, msg: "Could not delete comment" });
         }
     });
 
