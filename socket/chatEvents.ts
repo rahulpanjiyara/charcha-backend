@@ -256,8 +256,8 @@ export function registerChatEvents(socket: Socket, io: SocketIoServer) {
       const conversation = await memberConversation(data?.conversationId, userId);
       const content = typeof data?.content === "string" ? data.content.trim() : "";
       const attachment = typeof data?.attachment === "string" ? data.attachment : "";
-      const messageType = ["text", "image", "voice"].includes(String(data?.messageType))
-        ? String(data.messageType)
+      const messageType: "text" | "image" | "voice" = ["text", "image", "voice"].includes(String(data?.messageType))
+        ? data.messageType as "text" | "image" | "voice"
         : attachment ? "image" : "text";
       const audioDuration = messageType === "voice" ? Math.min(600, Math.max(0, Number(data?.audioDuration) || 0)) : 0;
       if (!conversation || (!content && !attachment)) {
@@ -279,7 +279,7 @@ export function registerChatEvents(socket: Socket, io: SocketIoServer) {
       const sender = await User.findById(userId).select("name avatar").lean();
       if (!sender) return fail(socket, "newMessage", "Sender not found");
 
-      const message = await Message.create({
+      const message: any = await Message.create({
         conversationId: conversation._id,
         senderId: userId,
         content,
