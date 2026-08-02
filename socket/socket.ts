@@ -7,6 +7,7 @@ import Conversation from "../modals/Conversation.js";
 import { registerUserEvents } from "./userEvents.js";
 import { registerChatEvents } from "./chatEvents.js";
 import { registerCallEvents } from "./callEvents.js";
+import { registerLiveRoomEvents } from "./liveRoomEvents.js";
 
 export function initializeSocket(server: any): SocketIoServer {
   const io = new SocketIoServer(server, {
@@ -57,6 +58,7 @@ export function initializeSocket(server: any): SocketIoServer {
     registerUserEvents(socket, io);
     registerChatEvents(socket, io);
     registerCallEvents(socket, io);
+    registerLiveRoomEvents(socket, io);
     io.emit("presenceChanged", { userId: String(userId), online: true });
 
     /* =======================

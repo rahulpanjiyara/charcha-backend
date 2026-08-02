@@ -4,6 +4,7 @@ import Conversation from "../modals/Conversation.js";
 import Message from "../modals/Message.js";
 import User from "../modals/User.js";
 import FriendRequest from "../modals/FriendRequest.js";
+import { createActivities } from "../utils/notifications.js";
 
 const disappearingDurations = new Set([0, 3600, 86400, 604800, 2592000]);
 const visibleMessageFilter = () => ({
@@ -62,6 +63,35 @@ function notifyUnreadChanged(io: SocketIoServer, userIds: string[]) {
 }
 
 export function registerChatEvents(socket: Socket, io: SocketIoServer) {
+  socket.on("getConversationPresence", async (data: { conversationId?: string; userId?: string }) => {
+    try {
+      const currentUserId = String(socket.data.userId);
+      const targetUserId = String(data?.userId || "");
+      const conversation = await memberConversation(data?.conversationId, currentUserId);
+      if (!conversation || !isValidObjectId(targetUserId)) {
+        return fail(socket, "getConversationPresence", "Invalid conversation or user");
+      }
+
+      const isParticipant = conversation.participants.some(
+        (participantId: any) => String(participantId) === targetUserId
+      );
+      if (!isParticipant || targetUserId === currentUserId) {
+        return fail(socket, "getConversationPresence", "User is not part of this conversation");
+      }
+
+      const online = Array.from(io.sockets.sockets.values()).some(
+        (client) => client.connected && String(client.data.userId) === targetUserId
+      );
+      socket.emit("getConversationPresence", {
+        success: true,
+        data: { userId: targetUserId, online },
+      });
+    } catch (error) {
+      console.error("getConversationPresence error", error);
+      fail(socket, "getConversationPresence", "Could not load presence");
+    }
+  });
+
   socket.on("typing", (data: { conversationId?: string; isTyping?: boolean }) => {
     const conversationId = data?.conversationId;
     if (
@@ -90,6 +120,12 @@ export function registerChatEvents(socket: Socket, io: SocketIoServer) {
         .populate("participants", "name avatar email")
         .lean();
 
+      const onlineIds = new Set(
+        Array.from(io.sockets.sockets.values())
+          .filter((client) => client.connected)
+          .map((client) => String(client.data.userId))
+      );
+
       const data = await Promise.all(conversations.map(async (conversation: any) => {
         const clearedAt = clearedAtFor(conversation, String(userId));
         const lastMessage = conversation.lastMessage as any;
@@ -97,6 +133,10 @@ export function registerChatEvents(socket: Socket, io: SocketIoServer) {
           new Date(lastMessage.createdAt).getTime() > clearedAt.getTime();
         return {
           ...conversation,
+          participants: conversation.participants.map((participant: any) => ({
+            ...participant,
+            online: onlineIds.has(String(participant._id)),
+          })),
           lastMessage: lastMessageVisible ? lastMessage : null,
           unreadCount: await Message.countDocuments({
           conversationId: conversation._id,
@@ -216,6 +256,10 @@ export function registerChatEvents(socket: Socket, io: SocketIoServer) {
       const conversation = await memberConversation(data?.conversationId, userId);
       const content = typeof data?.content === "string" ? data.content.trim() : "";
       const attachment = typeof data?.attachment === "string" ? data.attachment : "";
+      const messageType = ["text", "image", "voice"].includes(String(data?.messageType))
+        ? String(data.messageType)
+        : attachment ? "image" : "text";
+      const audioDuration = messageType === "voice" ? Math.min(600, Math.max(0, Number(data?.audioDuration) || 0)) : 0;
       if (!conversation || (!content && !attachment)) {
         return fail(socket, "newMessage", "Conversation not found or message is empty");
       }
@@ -240,6 +284,8 @@ export function registerChatEvents(socket: Socket, io: SocketIoServer) {
         senderId: userId,
         content,
         attachment,
+        messageType,
+        audioDuration,
         readBy: [new Types.ObjectId(userId)],
         expiresAt: conversation.disappearingMessagesSeconds
           ? new Date(Date.now() + conversation.disappearingMessagesSeconds * 1000)
@@ -256,6 +302,8 @@ export function registerChatEvents(socket: Socket, io: SocketIoServer) {
           content,
           sender: { id: userId, name: sender.name, avatar: sender.avatar },
           attachment,
+          messageType,
+          audioDuration,
           createdAt: message.createdAt,
           expiresAt: message.expiresAt,
           conversationId: conversation._id.toString(),
@@ -274,13 +322,21 @@ export function registerChatEvents(socket: Socket, io: SocketIoServer) {
               conversationName: conversation.name || "",
               conversationAvatar: conversation.avatar || "",
               sender: { id: userId, name: sender.name, avatar: sender.avatar || "" },
-              content: attachment && !content ? "Sent a photo" : content,
+              content: messageType === "voice" ? "Sent a voice message" : attachment && !content ? "Sent a photo" : content,
               createdAt: message.createdAt,
             },
           });
         }
       }
       notifyUnreadChanged(io, recipientIds);
+      void createActivities({
+        recipientIds,
+        actorId: userId,
+        type: "message",
+        title: conversation.type === "group" ? conversation.name || "New group message" : sender.name || "New message",
+        body: messageType === "voice" ? "Sent a voice message" : attachment && !content ? "Sent a photo" : content.slice(0, 180),
+        data: { url: "/(main)/main?tab=messages", conversationId: conversation._id.toString() },
+      });
     } catch (error) {
       console.error("newMessage error", error);
       fail(socket, "newMessage", "Failed to send the message");
@@ -342,6 +398,8 @@ export function registerChatEvents(socket: Socket, io: SocketIoServer) {
         data: {
           conversationId: conversation._id.toString(),
           disappearingMessagesSeconds: conversation.disappearingMessagesSeconds || 0,
+          type: conversation.type,
+          createdBy: conversation.createdBy?.toString() || null,
         },
       });
     } catch (error) {
@@ -382,6 +440,9 @@ export function registerChatEvents(socket: Socket, io: SocketIoServer) {
       if (!conversation) return fail(socket, "deleteConversation", "Conversation not found");
 
       if (data.mode === "everyone") {
+        if (conversation.type === "group" && conversation.createdBy?.toString() !== userId) {
+          return fail(socket, "deleteConversation", "Only the group creator can delete this group");
+        }
         const conversationId = conversation._id.toString();
         await Message.deleteMany({ conversationId: conversation._id });
         await conversation.deleteOne();

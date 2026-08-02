@@ -39,6 +39,10 @@ const userSchema = new Schema<UserProps>({
         trim:true,
         maxlength:24,
     },
+    pushTokens: {
+        type: [String],
+        default: [],
+    },
     created:{
         type:Date,
         default:Date.now,

@@ -12,8 +12,10 @@ const commentSchema = new Schema(
 const postSchema = new Schema(
   {
     author: { type: Schema.Types.ObjectId, ref: "User", required: true },
+    kind: { type: String, enum: ["post", "moment"], default: "post" },
     content: { type: String, trim: true, maxlength: 2000, default: "" },
     image: { type: String, default: "" },
+    taggedUsers: [{ type: Schema.Types.ObjectId, ref: "User" }],
     likes: [{ type: Schema.Types.ObjectId, ref: "User" }],
     comments: { type: [commentSchema], default: [] },
   },

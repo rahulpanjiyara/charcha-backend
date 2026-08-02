@@ -6,6 +6,9 @@ import { isValidObjectId, Types } from "mongoose";
 import Post from "../modals/Post.js";
 import Conversation from "../modals/Conversation.js";
 import Message from "../modals/Message.js";
+import Activity from "../modals/Activity.js";
+import Moment from "../modals/Moment.js";
+import { createActivities } from "../utils/notifications.js";
 
 const publicUser = (user: any) => ({
     id: user._id.toString(),
@@ -37,7 +40,202 @@ async function friendIdsFor(userId: string) {
     );
 }
 
+const serializeMoment = (moment: any, userId: string) => ({
+    id: moment._id.toString(),
+    title: moment.title,
+    owner: publicUser(moment.owner),
+    contributors: (moment.contributors || []).filter(Boolean).map(publicUser),
+    entries: (moment.entries || []).map((entry: any) => ({
+        id: entry._id.toString(),
+        author: publicUser(entry.author),
+        image: entry.image,
+        caption: entry.caption || "",
+        createdAt: entry.createdAt,
+    })),
+    isOwner: moment.owner?._id?.toString() === userId,
+    canContribute: moment.owner?._id?.toString() === userId
+        || (moment.contributors || []).some((contributor: any) => contributor?._id?.toString() === userId),
+    createdAt: moment.createdAt,
+    updatedAt: moment.updatedAt,
+});
+
+const emitMomentsChanged = (io: SocketIoServer, userIds: string[]) => {
+    const recipients = new Set(userIds);
+    for (const client of io.sockets.sockets.values()) {
+        if (recipients.has(String(client.data.userId))) client.emit("momentsChanged", { success: true });
+    }
+};
+
 export function registerUserEvents(socket: Socket, io: SocketIoServer) {
+    socket.on("getMoments", async () => {
+        try {
+            const userId = String(socket.data.userId);
+            const moments = await Moment.find({ $or: [{ owner: userId }, { contributors: userId }] })
+                .sort({ updatedAt: -1 })
+                .limit(30)
+                .populate("owner", "name email avatar")
+                .populate("contributors", "name email avatar")
+                .populate("entries.author", "name email avatar")
+                .lean();
+            socket.emit("getMoments", { success: true, data: moments.map((moment: any) => serializeMoment(moment, userId)) });
+        } catch (error) {
+            console.error("getMoments error", error);
+            socket.emit("getMoments", { success: false, msg: "Could not load Moments" });
+        }
+    });
+
+    socket.on("createMoment", async (data: { title?: string; contributorIds?: string[] }) => {
+        try {
+            const userId = String(socket.data.userId);
+            const title = String(data?.title || "").trim();
+            if (!title) return socket.emit("createMoment", { success: false, msg: "Give your Moment a title" });
+            const requestedIds = [...new Set((Array.isArray(data?.contributorIds) ? data.contributorIds : []).map(String))]
+                .filter((id) => isValidObjectId(id) && id !== userId)
+                .slice(0, 12);
+            const friendIds = await friendIdsFor(userId);
+            const contributorIds = requestedIds.filter((id) => friendIds.includes(id));
+            if (contributorIds.length !== requestedIds.length) {
+                return socket.emit("createMoment", { success: false, msg: "Only current friends can contribute" });
+            }
+            const created = await Moment.create({
+                owner: new Types.ObjectId(userId),
+                title: title.slice(0, 100),
+                contributors: contributorIds.map((id) => new Types.ObjectId(id)),
+            });
+            socket.emit("createMoment", { success: true, data: { momentId: created._id.toString() }, msg: "Moment created" });
+            emitMomentsChanged(io, [userId, ...contributorIds]);
+            void createActivities({
+                recipientIds: contributorIds,
+                actorId: userId,
+                type: "moment_invite",
+                title: "A Moment to share",
+                body: `${socket.data.user?.name || "A friend"} invited you to add photos to ${title}`,
+                data: { url: "/(main)/moments", momentId: created._id.toString() },
+            });
+        } catch (error) {
+            console.error("createMoment error", error);
+            socket.emit("createMoment", { success: false, msg: "Could not create this Moment" });
+        }
+    });
+
+    socket.on("addMomentEntry", async (data: { momentId?: string; image?: string; caption?: string }) => {
+        try {
+            const userId = String(socket.data.userId);
+            const image = String(data?.image || "").trim();
+            if (!data?.momentId || !isValidObjectId(data.momentId) || !/^https?:\/\//i.test(image)) {
+                return socket.emit("addMomentEntry", { success: false, msg: "Choose a valid photo" });
+            }
+            const moment: any = await Moment.findOne({ _id: data.momentId, $or: [{ owner: userId }, { contributors: userId }] });
+            if (!moment) return socket.emit("addMomentEntry", { success: false, msg: "You cannot contribute to this Moment" });
+            if (moment.entries.length >= 250) return socket.emit("addMomentEntry", { success: false, msg: "This Moment has reached its photo limit" });
+            moment.entries.push({ author: new Types.ObjectId(userId), image, caption: String(data?.caption || "").trim().slice(0, 300) });
+            await moment.save();
+            const memberIds = [moment.owner.toString(), ...moment.contributors.map((id: any) => id.toString())];
+            socket.emit("addMomentEntry", { success: true, data: { momentId: moment._id.toString() }, msg: "Photo added" });
+            emitMomentsChanged(io, memberIds);
+            void createActivities({
+                recipientIds: memberIds,
+                actorId: userId,
+                type: "moment_photo",
+                title: "New Moment photo",
+                body: `${socket.data.user?.name || "A friend"} added a photo to ${moment.title}`,
+                data: { url: "/(main)/moments", momentId: moment._id.toString() },
+            });
+        } catch (error) {
+            console.error("addMomentEntry error", error);
+            socket.emit("addMomentEntry", { success: false, msg: "Could not add this photo" });
+        }
+    });
+
+    socket.on("deleteMoment", async (data: { momentId?: string }) => {
+        try {
+            const userId = String(socket.data.userId);
+            if (!data?.momentId || !isValidObjectId(data.momentId)) return;
+            const moment: any = await Moment.findOneAndDelete({ _id: data.momentId, owner: userId });
+            if (!moment) return socket.emit("deleteMoment", { success: false, msg: "Only the creator can delete this Moment" });
+            const memberIds = [userId, ...moment.contributors.map((id: any) => id.toString())];
+            socket.emit("deleteMoment", { success: true, data: { momentId: data.momentId } });
+            emitMomentsChanged(io, memberIds);
+        } catch (error) {
+            console.error("deleteMoment error", error);
+            socket.emit("deleteMoment", { success: false, msg: "Could not delete this Moment" });
+        }
+    });
+
+    socket.on("getActivityDigest", async () => {
+        try {
+            const userId = String(socket.data.userId);
+            const since = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+            const [activities, unreadCount] = await Promise.all([
+                Activity.find({ recipient: userId, createdAt: { $gte: since } })
+                    .sort({ createdAt: -1 })
+                    .limit(12)
+                    .populate("actor", "name avatar")
+                    .lean(),
+                Activity.countDocuments({ recipient: userId, readAt: null }),
+            ]);
+            const counts = activities.reduce<Record<string, number>>((summary, activity: any) => {
+                summary[activity.type] = (summary[activity.type] || 0) + 1;
+                return summary;
+            }, {});
+            socket.emit("getActivityDigest", {
+                success: true,
+                data: {
+                    unreadCount,
+                    counts,
+                    items: activities.map((activity: any) => ({
+                        id: activity._id.toString(),
+                        type: activity.type,
+                        title: activity.title,
+                        body: activity.body,
+                        data: activity.data || {},
+                        read: Boolean(activity.readAt),
+                        createdAt: activity.createdAt,
+                        actor: activity.actor ? publicUser(activity.actor) : null,
+                    })),
+                },
+            });
+        } catch (error) {
+            console.error("getActivityDigest error", error);
+            socket.emit("getActivityDigest", { success: false, msg: "Could not prepare your activity summary" });
+        }
+    });
+
+    socket.on("markActivitiesRead", async () => {
+        try {
+            const userId = String(socket.data.userId);
+            await Activity.updateMany({ recipient: userId, readAt: null }, { $set: { readAt: new Date() } });
+            socket.emit("markActivitiesRead", { success: true });
+        } catch (error) {
+            console.error("markActivitiesRead error", error);
+            socket.emit("markActivitiesRead", { success: false, msg: "Could not mark activity as seen" });
+        }
+    });
+
+    socket.on("registerPushToken", async (data: { token?: string }) => {
+        try {
+            const token = String(data?.token || "").trim();
+            if (!/^(ExponentPushToken|ExpoPushToken)\[.+\]$/.test(token)) {
+                return socket.emit("registerPushToken", { success: false, msg: "Invalid push token" });
+            }
+            await User.updateMany({ _id: { $ne: socket.data.userId }, pushTokens: token }, { $pull: { pushTokens: token } });
+            await User.findByIdAndUpdate(socket.data.userId, { $addToSet: { pushTokens: token } });
+            socket.emit("registerPushToken", { success: true });
+        } catch (error) {
+            console.error("registerPushToken error", error);
+            socket.emit("registerPushToken", { success: false, msg: "Could not register notifications" });
+        }
+    });
+
+    socket.on("unregisterPushToken", async (data: { token?: string }) => {
+        try {
+            const token = String(data?.token || "").trim();
+            if (token) await User.findByIdAndUpdate(socket.data.userId, { $pull: { pushTokens: token } });
+            socket.emit("unregisterPushToken", { success: true });
+        } catch (error) {
+            console.error("unregisterPushToken error", error);
+        }
+    });
   
     socket.on("updateProfile", async (data: { name?: string; avatar?: string; about?: string; status?: string; mobile?: string }) => {
         //console.log('updateprofile event', data);
@@ -126,6 +324,7 @@ export function registerUserEvents(socket: Socket, io: SocketIoServer) {
                 data: posts.map((post: any) => ({
                     id: post._id.toString(),
                     author: publicUser(post.author),
+                    kind: post.kind || "post",
                     content: post.content,
                     image: post.image,
                     likesCount: post.likes?.length || 0,
@@ -291,9 +490,39 @@ export function registerUserEvents(socket: Socket, io: SocketIoServer) {
             );
             socket.emit("sendFriendRequest", { success: true, msg: "Friend request sent" });
             notifyFriendDataChanged(io, [senderId, recipientId]);
+            void createActivities({
+                recipientIds: [recipientId],
+                actorId: senderId,
+                type: "friend_request",
+                title: "New friend request",
+                body: `${socket.data.user?.name || "Someone"} sent you a friend request`,
+                data: { url: "/(main)/main?tab=community", section: "requests" },
+            });
         } catch (error) {
             console.error("sendFriendRequest error", error);
             socket.emit("sendFriendRequest", { success: false, msg: "Could not send request" });
+        }
+    });
+
+    socket.on("cancelFriendRequest", async (data: { requestId?: string }) => {
+        try {
+            const senderId = String(socket.data.userId);
+            if (!data?.requestId || !isValidObjectId(data.requestId)) {
+                return socket.emit("cancelFriendRequest", { success: false, msg: "Invalid request", data: { requestId: data?.requestId } });
+            }
+            const request = await FriendRequest.findOneAndDelete({
+                _id: data.requestId,
+                sender: senderId,
+                status: "pending",
+            });
+            if (!request) {
+                return socket.emit("cancelFriendRequest", { success: false, msg: "Request is no longer available", data: { requestId: data.requestId } });
+            }
+            socket.emit("cancelFriendRequest", { success: true, msg: "Friend request canceled", data: { requestId: data.requestId } });
+            notifyFriendDataChanged(io, [request.sender.toString(), request.recipient.toString()]);
+        } catch (error) {
+            console.error("cancelFriendRequest error", error);
+            socket.emit("cancelFriendRequest", { success: false, msg: "Could not cancel request", data: { requestId: data?.requestId } });
         }
     });
 
@@ -325,6 +554,7 @@ export function registerUserEvents(socket: Socket, io: SocketIoServer) {
                 .sort({ createdAt: -1 })
                 .limit(50)
                 .populate("author", "name avatar")
+                .populate("taggedUsers", "name avatar")
                 .populate("comments.author", "name avatar")
                 .lean();
             socket.emit("getFeed", {
@@ -334,6 +564,7 @@ export function registerUserEvents(socket: Socket, io: SocketIoServer) {
                     author: publicUser(post.author),
                     content: post.content,
                     image: post.image,
+                    taggedUsers: (post.taggedUsers || []).filter(Boolean).map(publicUser),
                     isMine: post.author._id.toString() === userId,
                     likesCount: post.likes?.length || 0,
                     likedByMe: post.likes?.some((id: any) => id.toString() === userId) || false,
@@ -352,15 +583,37 @@ export function registerUserEvents(socket: Socket, io: SocketIoServer) {
         }
     });
 
-    socket.on("createPost", async (data: { content?: string; image?: string }) => {
+    socket.on("createPost", async (data: { content?: string; image?: string; taggedUserIds?: string[] }) => {
         try {
             const userId = String(socket.data.userId);
             const content = String(data?.content || "").trim();
             const image = typeof data?.image === "string" ? data.image : "";
             if (!content && !image) return socket.emit("createPost", { success: false, msg: "Write something or add a photo" });
-            await Post.create({ author: userId, content, image });
-            socket.emit("createPost", { success: true, msg: "Posted" });
+            const requestedTagIds = Array.from(new Set(Array.isArray(data?.taggedUserIds) ? data.taggedUserIds.map(String) : []))
+                .filter((id) => isValidObjectId(id) && id !== userId)
+                .slice(0, 10);
             const friendIds = await friendIdsFor(userId);
+            const taggedUsers = requestedTagIds.filter((id) => friendIds.includes(id));
+            if (taggedUsers.length !== requestedTagIds.length) {
+                return socket.emit("createPost", { success: false, msg: "You can only tag current friends" });
+            }
+            const post = await Post.create({
+                author: new Types.ObjectId(userId),
+                content,
+                image,
+                taggedUsers: taggedUsers.map((id) => new Types.ObjectId(id)),
+            });
+            socket.emit("createPost", { success: true, msg: "Posted" });
+            if (taggedUsers.length) {
+                void createActivities({
+                    recipientIds: taggedUsers,
+                    actorId: userId,
+                    type: "post_tag",
+                    title: "You were tagged",
+                    body: `${socket.data.user?.name || "A friend"} tagged you in a post`,
+                    data: { url: "/(main)/main?tab=community", postId: post._id.toString() },
+                });
+            }
             for (const client of io.sockets.sockets.values()) {
                 if ([userId, ...friendIds].includes(String(client.data.userId))) client.emit("feedChanged", { success: true });
             }

@@ -14,6 +14,17 @@ const messageSchema = new mongoose.Schema({
     },
     content:String,
     attachment:String,
+    messageType: {
+        type: String,
+        enum: ["text", "image", "voice"],
+        default: "text",
+    },
+    audioDuration: {
+        type: Number,
+        default: 0,
+        min: 0,
+        max: 600,
+    },
     readBy:[{
         type:mongoose.Schema.Types.ObjectId,
         ref:"User",

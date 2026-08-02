@@ -8,6 +8,7 @@ export interface UserProps extends Document {
   about?: string;
   status?: string;
   mobile?: string;
+  pushTokens?: string[];
   created?: Date;
 }
 
