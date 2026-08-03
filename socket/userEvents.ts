@@ -26,17 +26,6 @@ const postImages = (post: any): string[] => {
     return images.slice(0, 10);
 };
 
-const postMedia = (post: any): { type: "image" | "video"; url: string }[] => {
-    const media = Array.isArray(post.media)
-        ? post.media.flatMap((item: any) => {
-            const type = item?.type === "video" ? "video" : item?.type === "image" ? "image" : null;
-            const url = typeof item?.url === "string" ? item.url.trim() : "";
-            return type && url ? [{ type, url }] : [];
-        })
-        : [];
-    return media.length ? media.slice(0, 10) : postImages(post).map((url) => ({ type: "image", url }));
-};
-
 const notifyFriendDataChanged = (io: SocketIoServer, userIds: string[]) => {
     for (const client of io.sockets.sockets.values()) {
         if (userIds.includes(String(client.data.userId))) {
@@ -427,7 +416,6 @@ export function registerUserEvents(socket: Socket, io: SocketIoServer) {
                     content: post.content,
                     image: postImages(post)[0] || "",
                     images: postImages(post),
-                    media: postMedia(post),
                     likesCount: post.likes?.length || 0,
                     likedByMe: post.likes?.some((id: any) => id.toString() === viewerId) || false,
                     commentsCount: post.comments?.length || 0,
@@ -697,7 +685,6 @@ export function registerUserEvents(socket: Socket, io: SocketIoServer) {
                     content: post.content,
                     image: postImages(post)[0] || "",
                     images: postImages(post),
-                    media: postMedia(post),
                     taggedUsers: (post.taggedUsers || []).filter(Boolean).map(publicUser),
                     isMine: post.author._id.toString() === userId,
                     likesCount: post.likes?.length || 0,
@@ -722,22 +709,15 @@ export function registerUserEvents(socket: Socket, io: SocketIoServer) {
         }
     });
 
-    socket.on("createPost", async (data: { content?: string; image?: string; images?: string[]; media?: { type?: string; url?: string }[]; taggedUserIds?: string[] }) => {
+    socket.on("createPost", async (data: { content?: string; image?: string; images?: string[]; taggedUserIds?: string[] }) => {
         try {
             const userId = String(socket.data.userId);
             const content = String(data?.content || "").trim();
-            const requestedMedia = Array.isArray(data?.media) ? data.media.flatMap((item) => {
-                const type = item?.type === "video" ? "video" : item?.type === "image" ? "image" : null;
-                const url = typeof item?.url === "string" ? item.url.trim() : "";
-                return type && url ? [{ type, url }] : [];
-            }) : [];
-            const legacyImages = Array.from(new Set([
+            const images = Array.from(new Set([
                 ...(Array.isArray(data?.images) ? data.images : []),
                 ...(typeof data?.image === "string" ? [data.image] : []),
-            ].map((image) => String(image).trim()).filter(Boolean))).map((url) => ({ type: "image" as const, url }));
-            const media = (requestedMedia.length ? requestedMedia : legacyImages).slice(0, 10);
-            const images = media.filter((item) => item.type === "image").map((item) => item.url);
-            if (!content && !media.length) return socket.emit("createPost", { success: false, msg: "Write something or add photo/video" });
+            ].map((image) => String(image).trim()).filter(Boolean))).slice(0, 10);
+            if (!content && !images.length) return socket.emit("createPost", { success: false, msg: "Write something or add a photo" });
             const requestedTagIds = Array.from(new Set(Array.isArray(data?.taggedUserIds) ? data.taggedUserIds.map(String) : []))
                 .filter((id) => isValidObjectId(id) && id !== userId)
                 .slice(0, 10);
@@ -751,7 +731,6 @@ export function registerUserEvents(socket: Socket, io: SocketIoServer) {
                 content,
                 image: images[0] || "",
                 images,
-                media,
                 taggedUsers: taggedUsers.map((id) => new Types.ObjectId(id)),
             });
             socket.emit("createPost", { success: true, msg: "Posted" });
