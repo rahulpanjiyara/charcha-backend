@@ -13,11 +13,9 @@ import { createActivities } from "../utils/notifications.js";
 const publicUser = (user: any) => ({
     id: user._id.toString(),
     name: user.name,
-    email: user.email,
     avatar: user.avatar || "",
     about: user.about || "",
     status: user.status || "Available",
-    mobile: user.mobile || "",
 });
 
 const notifyFriendDataChanged = (io: SocketIoServer, userIds: string[]) => {
@@ -298,15 +296,26 @@ export function registerUserEvents(socket: Socket, io: SocketIoServer) {
 
     socket.on("getUserProfile", async (data: { userId?: string }) => {
         try {
-            const requestedId = String(data?.userId || socket.data.userId || "");
+            const viewerId = String(socket.data.userId || "");
+            const requestedId = String(data?.userId || viewerId);
             if (!isValidObjectId(requestedId)) {
                 return socket.emit("getUserProfile", { success: false, msg: "Invalid user" });
             }
             const profile = await User.findById(requestedId).select("name email avatar about status mobile created").lean();
             if (!profile) return socket.emit("getUserProfile", { success: false, msg: "User not found" });
+            const canViewPrivate = requestedId === viewerId || (await friendIdsFor(viewerId)).includes(requestedId);
             socket.emit("getUserProfile", {
                 success: true,
-                data: { ...publicUser(profile), joinedAt: profile.created },
+                data: {
+                    id: profile._id.toString(),
+                    name: profile.name,
+                    avatar: profile.avatar || "",
+                    about: profile.about || "",
+                    status: profile.status || "Available",
+                    joinedAt: profile.created,
+                    canViewPrivate,
+                    ...(canViewPrivate ? { email: profile.email, mobile: profile.mobile || "" } : {}),
+                },
             });
         } catch (error) {
             console.error("getUserProfile error", error);
@@ -314,7 +323,7 @@ export function registerUserEvents(socket: Socket, io: SocketIoServer) {
         }
     });
 
-    socket.on("getUserPosts", async (data: { userId?: string }) => {
+    socket.on("getUserPosts", async (data: { userId?: string; cursor?: string; limit?: number }) => {
         try {
             const viewerId = String(socket.data.userId || "");
             const requestedId = String(data?.userId || viewerId);
@@ -325,14 +334,66 @@ export function registerUserEvents(socket: Socket, io: SocketIoServer) {
             if (!allowedIds.has(requestedId)) {
                 return socket.emit("getUserPosts", { success: false, msg: "Only friends can view this feed" });
             }
-            const posts = await Post.find({ author: requestedId })
+            const requestedLimit = Number(data?.limit);
+            const pageSize = Number.isFinite(requestedLimit)
+                ? Math.min(Math.max(Math.trunc(requestedLimit), 5), 20)
+                : 50;
+            const cursor = String(data?.cursor || "");
+            let cursorFilter = {};
+
+            if (cursor && isValidObjectId(cursor)) {
+                const cursorPost = await Post.findOne({ _id: cursor, author: requestedId }).select("createdAt").lean();
+                if (cursorPost) {
+                    cursorFilter = {
+                        $or: [
+                            { createdAt: { $lt: cursorPost.createdAt } },
+                            { createdAt: cursorPost.createdAt, _id: { $lt: cursorPost._id } },
+                        ],
+                    };
+                }
+            }
+
+            const posts = await Post.find({ author: requestedId, ...cursorFilter })
                 .sort({ createdAt: -1 })
-                .limit(50)
+                .limit(pageSize + 1)
                 .populate("author", "name avatar about status mobile")
                 .lean();
+            const hasMore = posts.length > pageSize;
+            const page = hasMore ? posts.slice(0, pageSize) : posts;
+            let highlights;
+            if (!cursor) {
+                const photoFilter = { author: requestedId, image: { $exists: true, $nin: ["", null] } };
+                const [friendCount, relationships, photoCount, photoPosts] = await Promise.all([
+                    FriendRequest.countDocuments({
+                        status: "accepted",
+                        $or: [{ sender: requestedId }, { recipient: requestedId }],
+                    }),
+                    FriendRequest.find({
+                        status: "accepted",
+                        $or: [{ sender: requestedId }, { recipient: requestedId }],
+                    })
+                        .sort({ updatedAt: -1 })
+                        .limit(6)
+                        .populate("sender", "name avatar")
+                        .populate("recipient", "name avatar")
+                        .lean(),
+                    Post.countDocuments(photoFilter),
+                    Post.find(photoFilter).sort({ createdAt: -1 }).limit(6).select("image").lean(),
+                ]);
+                highlights = {
+                    friendsCount: friendCount,
+                    friends: relationships.map((relationship: any) => {
+                        const senderId = relationship.sender?._id?.toString();
+                        const friend = senderId === requestedId ? relationship.recipient : relationship.sender;
+                        return friend ? publicUser(friend) : null;
+                    }).filter(Boolean),
+                    photosCount: photoCount,
+                    photos: photoPosts.map((photo: any) => ({ id: photo._id.toString(), image: photo.image })),
+                };
+            }
             socket.emit("getUserPosts", {
                 success: true,
-                data: posts.map((post: any) => ({
+                data: page.map((post: any) => ({
                     id: post._id.toString(),
                     author: publicUser(post.author),
                     kind: post.kind || "post",
@@ -343,6 +404,12 @@ export function registerUserEvents(socket: Socket, io: SocketIoServer) {
                     commentsCount: post.comments?.length || 0,
                     createdAt: post.createdAt,
                 })),
+                pagination: {
+                    hasMore,
+                    nextCursor: hasMore ? page[page.length - 1]?._id.toString() || null : null,
+                    requestCursor: cursor || null,
+                },
+                ...(highlights ? { highlights } : {}),
             });
         } catch (error) {
             console.error("getUserPosts error", error);
@@ -557,20 +624,45 @@ export function registerUserEvents(socket: Socket, io: SocketIoServer) {
         }
     });
 
-    socket.on("getFeed", async () => {
+    socket.on("getFeed", async (data?: { cursor?: string; limit?: number }) => {
         try {
             const userId = String(socket.data.userId);
             const friendIds = await friendIdsFor(userId);
-            const posts = await Post.find({ author: { $in: [userId, ...friendIds] } })
+            const requestedLimit = Number(data?.limit);
+            const pageSize = Number.isFinite(requestedLimit)
+                ? Math.min(Math.max(Math.trunc(requestedLimit), 5), 20)
+                : 50;
+            const cursor = String(data?.cursor || "");
+            let cursorFilter = {};
+
+            if (cursor && isValidObjectId(cursor)) {
+                const cursorPost = await Post.findById(cursor).select("createdAt").lean();
+                if (cursorPost) {
+                    cursorFilter = {
+                        $or: [
+                            { createdAt: { $lt: cursorPost.createdAt } },
+                            { createdAt: cursorPost.createdAt, _id: { $lt: cursorPost._id } },
+                        ],
+                    };
+                }
+            }
+
+            const posts = await Post.find({
+                author: { $in: [userId, ...friendIds] },
+                ...cursorFilter,
+            })
                 .sort({ createdAt: -1 })
-                .limit(50)
+                .limit(pageSize + 1)
                 .populate("author", "name avatar")
                 .populate("taggedUsers", "name avatar")
                 .populate("comments.author", "name avatar")
                 .lean();
+            const hasMore = posts.length > pageSize;
+            const page = hasMore ? posts.slice(0, pageSize) : posts;
             socket.emit("getFeed", {
                 success: true,
-                data: posts.map((post: any) => ({
+                // Keep data as an array so older app versions can still consume it.
+                data: page.map((post: any) => ({
                     id: post._id.toString(),
                     author: publicUser(post.author),
                     content: post.content,
@@ -587,6 +679,11 @@ export function registerUserEvents(socket: Socket, io: SocketIoServer) {
                     })),
                     createdAt: post.createdAt,
                 })),
+                pagination: {
+                    hasMore,
+                    nextCursor: hasMore ? page[page.length - 1]?._id.toString() || null : null,
+                    requestCursor: cursor || null,
+                },
             });
         } catch (error) {
             console.error("getFeed error", error);
