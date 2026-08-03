@@ -311,7 +311,23 @@ export function registerUserEvents(socket: Socket, io: SocketIoServer) {
             }
             const profile = await User.findById(requestedId).select("name email avatar about status mobile created").lean();
             if (!profile) return socket.emit("getUserProfile", { success: false, msg: "User not found" });
-            const canViewPrivate = requestedId === viewerId || (await friendIdsFor(viewerId)).includes(requestedId);
+            const relationshipDocument = requestedId === viewerId ? null : await FriendRequest.findOne({
+                $or: [
+                    { sender: viewerId, recipient: requestedId },
+                    { sender: requestedId, recipient: viewerId },
+                ],
+                status: { $in: ["pending", "accepted"] },
+            }).lean();
+            const relationship = requestedId === viewerId
+                ? "self"
+                : relationshipDocument?.status === "accepted"
+                    ? "friends"
+                    : relationshipDocument?.sender.toString() === viewerId
+                        ? "outgoing"
+                        : relationshipDocument?.status === "pending"
+                            ? "incoming"
+                            : "none";
+            const canViewPrivate = relationship === "self" || relationship === "friends";
             socket.emit("getUserProfile", {
                 success: true,
                 data: {
@@ -322,6 +338,8 @@ export function registerUserEvents(socket: Socket, io: SocketIoServer) {
                     status: profile.status || "Available",
                     joinedAt: profile.created,
                     canViewPrivate,
+                    relationship,
+                    requestId: relationshipDocument?._id.toString(),
                     ...(canViewPrivate ? { email: profile.email, mobile: profile.mobile || "" } : {}),
                 },
             });
@@ -585,12 +603,12 @@ export function registerUserEvents(socket: Socket, io: SocketIoServer) {
                 });
             }
 
-            await FriendRequest.findOneAndUpdate(
+            const request = await FriendRequest.findOneAndUpdate(
                 { sender: senderId, recipient: recipientId },
                 { status: "pending" },
                 { upsert: true, new: true, setDefaultsOnInsert: true }
             );
-            socket.emit("sendFriendRequest", { success: true, msg: "Friend request sent" });
+            socket.emit("sendFriendRequest", { success: true, msg: "Friend request sent", data: { requestId: request._id.toString() } });
             notifyFriendDataChanged(io, [senderId, recipientId]);
             void createActivities({
                 recipientIds: [recipientId],
