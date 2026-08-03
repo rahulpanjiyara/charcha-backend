@@ -15,6 +15,11 @@ const postSchema = new Schema(
     kind: { type: String, enum: ["post", "moment"], default: "post" },
     content: { type: String, trim: true, maxlength: 2000, default: "" },
     image: { type: String, default: "" },
+    images: {
+      type: [String],
+      default: [],
+      validate: { validator: (images: string[]) => images.length <= 10, message: "A post can contain up to 10 photos" },
+    },
     taggedUsers: [{ type: Schema.Types.ObjectId, ref: "User" }],
     likes: [{ type: Schema.Types.ObjectId, ref: "User" }],
     comments: { type: [commentSchema], default: [] },

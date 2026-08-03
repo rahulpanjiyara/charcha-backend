@@ -18,6 +18,14 @@ const publicUser = (user: any) => ({
     status: user.status || "Available",
 });
 
+const postImages = (post: any): string[] => {
+    const images: string[] = Array.isArray(post.images)
+        ? post.images.filter((image: unknown): image is string => typeof image === "string" && Boolean(image.trim()))
+        : [];
+    if (typeof post.image === "string" && post.image.trim() && !images.includes(post.image)) images.unshift(post.image);
+    return images.slice(0, 10);
+};
+
 const notifyFriendDataChanged = (io: SocketIoServer, userIds: string[]) => {
     for (const client of io.sockets.sockets.values()) {
         if (userIds.includes(String(client.data.userId))) {
@@ -362,8 +370,14 @@ export function registerUserEvents(socket: Socket, io: SocketIoServer) {
             const page = hasMore ? posts.slice(0, pageSize) : posts;
             let highlights;
             if (!cursor) {
-                const photoFilter = { author: requestedId, image: { $exists: true, $nin: ["", null] } };
-                const [friendCount, relationships, photoCount, photoPosts] = await Promise.all([
+                const photoFilter = {
+                    author: requestedId,
+                    $or: [
+                        { image: { $exists: true, $nin: ["", null] } },
+                        { "images.0": { $exists: true } },
+                    ],
+                };
+                const [friendCount, relationships, photoPosts] = await Promise.all([
                     FriendRequest.countDocuments({
                         status: "accepted",
                         $or: [{ sender: requestedId }, { recipient: requestedId }],
@@ -373,13 +387,15 @@ export function registerUserEvents(socket: Socket, io: SocketIoServer) {
                         $or: [{ sender: requestedId }, { recipient: requestedId }],
                     })
                         .sort({ updatedAt: -1 })
-                        .limit(6)
                         .populate("sender", "name avatar")
                         .populate("recipient", "name avatar")
                         .lean(),
-                    Post.countDocuments(photoFilter),
-                    Post.find(photoFilter).sort({ createdAt: -1 }).limit(6).select("image").lean(),
+                    Post.find(photoFilter).sort({ createdAt: -1 }).select("image images").lean(),
                 ]);
+                const photos = photoPosts.flatMap((photo: any) => postImages(photo).map((image, index) => ({
+                    id: `${photo._id.toString()}-${index}`,
+                    image,
+                })));
                 highlights = {
                     friendsCount: friendCount,
                     friends: relationships.map((relationship: any) => {
@@ -387,8 +403,8 @@ export function registerUserEvents(socket: Socket, io: SocketIoServer) {
                         const friend = senderId === requestedId ? relationship.recipient : relationship.sender;
                         return friend ? publicUser(friend) : null;
                     }).filter(Boolean),
-                    photosCount: photoCount,
-                    photos: photoPosts.map((photo: any) => ({ id: photo._id.toString(), image: photo.image })),
+                    photosCount: photos.length,
+                    photos,
                 };
             }
             socket.emit("getUserPosts", {
@@ -398,7 +414,8 @@ export function registerUserEvents(socket: Socket, io: SocketIoServer) {
                     author: publicUser(post.author),
                     kind: post.kind || "post",
                     content: post.content,
-                    image: post.image,
+                    image: postImages(post)[0] || "",
+                    images: postImages(post),
                     likesCount: post.likes?.length || 0,
                     likedByMe: post.likes?.some((id: any) => id.toString() === viewerId) || false,
                     commentsCount: post.comments?.length || 0,
@@ -666,7 +683,8 @@ export function registerUserEvents(socket: Socket, io: SocketIoServer) {
                     id: post._id.toString(),
                     author: publicUser(post.author),
                     content: post.content,
-                    image: post.image,
+                    image: postImages(post)[0] || "",
+                    images: postImages(post),
                     taggedUsers: (post.taggedUsers || []).filter(Boolean).map(publicUser),
                     isMine: post.author._id.toString() === userId,
                     likesCount: post.likes?.length || 0,
@@ -691,12 +709,15 @@ export function registerUserEvents(socket: Socket, io: SocketIoServer) {
         }
     });
 
-    socket.on("createPost", async (data: { content?: string; image?: string; taggedUserIds?: string[] }) => {
+    socket.on("createPost", async (data: { content?: string; image?: string; images?: string[]; taggedUserIds?: string[] }) => {
         try {
             const userId = String(socket.data.userId);
             const content = String(data?.content || "").trim();
-            const image = typeof data?.image === "string" ? data.image : "";
-            if (!content && !image) return socket.emit("createPost", { success: false, msg: "Write something or add a photo" });
+            const images = Array.from(new Set([
+                ...(Array.isArray(data?.images) ? data.images : []),
+                ...(typeof data?.image === "string" ? [data.image] : []),
+            ].map((image) => String(image).trim()).filter(Boolean))).slice(0, 10);
+            if (!content && !images.length) return socket.emit("createPost", { success: false, msg: "Write something or add a photo" });
             const requestedTagIds = Array.from(new Set(Array.isArray(data?.taggedUserIds) ? data.taggedUserIds.map(String) : []))
                 .filter((id) => isValidObjectId(id) && id !== userId)
                 .slice(0, 10);
@@ -708,7 +729,8 @@ export function registerUserEvents(socket: Socket, io: SocketIoServer) {
             const post = await Post.create({
                 author: new Types.ObjectId(userId),
                 content,
-                image,
+                image: images[0] || "",
+                images,
                 taggedUsers: taggedUsers.map((id) => new Types.ObjectId(id)),
             });
             socket.emit("createPost", { success: true, msg: "Posted" });
