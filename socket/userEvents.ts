@@ -365,6 +365,7 @@ export function registerUserEvents(socket: Socket, io: SocketIoServer) {
                 .sort({ createdAt: -1 })
                 .limit(pageSize + 1)
                 .populate("author", "name avatar about status mobile")
+                .populate("comments.author", "name avatar")
                 .lean();
             const hasMore = posts.length > pageSize;
             const page = hasMore ? posts.slice(0, pageSize) : posts;
@@ -419,6 +420,12 @@ export function registerUserEvents(socket: Socket, io: SocketIoServer) {
                     likesCount: post.likes?.length || 0,
                     likedByMe: post.likes?.some((id: any) => id.toString() === viewerId) || false,
                     commentsCount: post.comments?.length || 0,
+                    comments: (post.comments || []).map((comment: any) => ({
+                        id: comment._id.toString(),
+                        author: publicUser(comment.author),
+                        content: comment.content,
+                        createdAt: comment.createdAt,
+                    })),
                     createdAt: post.createdAt,
                 })),
                 pagination: {
