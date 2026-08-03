@@ -9,6 +9,14 @@ const commentSchema = new Schema(
   { _id: true }
 );
 
+const mediaSchema = new Schema(
+  {
+    type: { type: String, enum: ["image", "video"], required: true },
+    url: { type: String, required: true, trim: true },
+  },
+  { _id: false }
+);
+
 const postSchema = new Schema(
   {
     author: { type: Schema.Types.ObjectId, ref: "User", required: true },
@@ -19,6 +27,11 @@ const postSchema = new Schema(
       type: [String],
       default: [],
       validate: { validator: (images: string[]) => images.length <= 10, message: "A post can contain up to 10 photos" },
+    },
+    media: {
+      type: [mediaSchema],
+      default: [],
+      validate: { validator: (media: unknown[]) => media.length <= 10, message: "A post can contain up to 10 media items" },
     },
     taggedUsers: [{ type: Schema.Types.ObjectId, ref: "User" }],
     likes: [{ type: Schema.Types.ObjectId, ref: "User" }],
