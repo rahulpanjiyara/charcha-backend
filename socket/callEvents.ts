@@ -2,12 +2,14 @@ import { randomUUID } from "node:crypto";
 import type { Server as SocketIoServer, Socket } from "socket.io";
 import Conversation from "../modals/Conversation.js";
 import User from "../modals/User.js";
+import { sendPushToUsers } from "../utils/notifications.js";
 
 type PendingCall = {
   callId: string;
   conversationId: string;
   callerId: string;
   calleeId: string;
+  caller: { id: string; name: string; avatar: string | null };
   accepted: boolean;
   timeout: NodeJS.Timeout;
 };
@@ -42,11 +44,13 @@ export function registerCallEvents(socket: Socket, io: SocketIoServer) {
       const recipientOnline = Array.from(io.sockets.sockets.values()).some(
         (client) => client.connected && String(client.data.userId) === calleeId
       );
-      if (!recipientOnline) {
-        return socket.emit("callFailed", { success: false, msg: "This friend is currently offline" });
-      }
 
       const caller = await User.findById(callerId).select("name avatar").lean();
+      const callerInfo = {
+        id: callerId,
+        name: caller?.name || socket.data.user?.name || "Friend",
+        avatar: caller?.avatar || null,
+      };
       const callId = randomUUID();
       const timeout = setTimeout(() => {
         const call = pendingCalls.get(callId);
@@ -61,6 +65,7 @@ export function registerCallEvents(socket: Socket, io: SocketIoServer) {
         conversationId: conversation._id.toString(),
         callerId,
         calleeId,
+        caller: callerInfo,
         accepted: false,
         timeout,
       });
@@ -69,16 +74,33 @@ export function registerCallEvents(socket: Socket, io: SocketIoServer) {
       emitToUser(io, calleeId, "incomingVideoCall", {
         callId,
         conversationId: conversation._id.toString(),
-        caller: {
-          id: callerId,
-          name: caller?.name || socket.data.user?.name || "Friend",
-          avatar: caller?.avatar || null,
-        },
+        caller: callerInfo,
       });
+      if (!recipientOnline) {
+        await sendPushToUsers(
+          [calleeId],
+          `${callerInfo.name} is calling`,
+          "Incoming video call · Tap to answer",
+          { type: "video_call", callId, conversationId: conversation._id.toString() }
+        );
+      }
     } catch (error) {
       console.error("Failed to start video call", error);
       socket.emit("callFailed", { success: false, msg: "Could not start the video call" });
     }
+  });
+
+  socket.on("resumeVideoCall", (data: { callId?: string }) => {
+    const userId = String(socket.data.userId);
+    const call = data?.callId
+      ? pendingCalls.get(data.callId)
+      : Array.from(pendingCalls.values()).find((pendingCall) => pendingCall.calleeId === userId && !pendingCall.accepted);
+    if (!call || call.calleeId !== userId || call.accepted) return;
+    socket.emit("incomingVideoCall", {
+      callId: call.callId,
+      conversationId: call.conversationId,
+      caller: call.caller,
+    });
   });
 
   socket.on("respondVideoCall", (data: { callId?: string; accepted?: boolean }) => {
@@ -146,6 +168,7 @@ export function registerCallEvents(socket: Socket, io: SocketIoServer) {
     const userId = String(socket.data.userId);
     for (const call of pendingCalls.values()) {
       if (call.callerId !== userId && call.calleeId !== userId) continue;
+      if (!call.accepted && call.calleeId === userId) continue;
       clearTimeout(call.timeout);
       const otherUserId = call.callerId === userId ? call.calleeId : call.callerId;
       emitToUser(io, otherUserId, "callEnded", { callId: call.callId, reason: "Connection lost" });
