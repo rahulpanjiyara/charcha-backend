@@ -53,18 +53,19 @@ app.get("/account-deletion", (_req, res) => {
   <body>
     <main>
       <h1>Delete your Charcha account</h1>
-      <p>You can request permanent deletion of your Charcha account and its associated data at any time.</p>
+      <p>You can permanently delete your Charcha account and its associated app data at any time.</p>
 
-      <h2>How to request deletion</h2>
+      <h2>Delete your account in Charcha</h2>
       <ol>
-        <li>Email us from the address registered with your Charcha account.</li>
-        <li>Use the subject <strong>Charcha account deletion request</strong>.</li>
-        <li>Include your profile name so we can identify and verify the account.</li>
+        <li>Open Charcha and go to <strong>Profile</strong>.</li>
+        <li>Open <strong>Your profile</strong>, then tap <strong>Delete account</strong>.</li>
+        <li>Enter your current password and confirm permanent deletion.</li>
       </ol>
-      <a class="button" href="mailto:rahulpanjiyara@gmail.com?subject=Charcha%20account%20deletion%20request">Request account deletion</a>
+      <p>If you cannot access the app, you can still submit a verified deletion request by email.</p>
+      <a class="button" href="mailto:rahulpanjiyara@gmail.com?subject=Charcha%20account%20deletion%20request">Email a deletion request</a>
 
       <h2>What will be deleted</h2>
-      <p>After verification, we delete your account details, profile information, friend connections, posts, comments, reactions, uploaded media, conversations, messages, call records and notification tokens from Charcha's active systems.</p>
+      <p>In-app deletion immediately removes your account details, profile information, friend connections, posts, comments, reactions, moments, conversations, messages and notification tokens from Charcha's active database.</p>
 
       <h2>Retention</h2>
       <p class="note">The request is normally completed within 30 days. Limited records may be retained only when required for security, fraud prevention, legal compliance or disaster-recovery backups. Backup copies are removed through the normal backup cycle and are not used for any other purpose.</p>

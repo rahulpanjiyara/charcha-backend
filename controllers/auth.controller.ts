@@ -2,9 +2,16 @@ import type { Request, Response } from "express";
 import User from "../modals/User.js";
 import bcrypt from "bcryptjs";
 import { createHmac, randomInt, timingSafeEqual } from "node:crypto";
+import jwt from "jsonwebtoken";
 import { generateToken } from "../utils/token.js";
 import { sendPasswordResetEmail } from "../utils/email.js";
 import { isValidMobile, mobileLookup, normalizeEmail, normalizeMobile } from "../utils/identity.js";
+import Activity from "../modals/Activity.js";
+import Conversation from "../modals/Conversation.js";
+import FriendRequest from "../modals/FriendRequest.js";
+import Message from "../modals/Message.js";
+import Moment from "../modals/Moment.js";
+import Post from "../modals/Post.js";
 
 
 
@@ -213,5 +220,115 @@ export const resetPassword = async (req: Request, res: Response): Promise<void> 
     } catch (error) {
         console.error("Reset password error:", error);
         res.status(500).json({ success: false, message: "Server error" });
+    }
+};
+
+type AuthTokenPayload = { user?: { id?: string } };
+
+const getAuthenticatedUserId = (req: Request) => {
+    const authorization = String(req.headers.authorization || "");
+    if (!authorization.startsWith("Bearer ")) return null;
+
+    const token = authorization.slice(7).trim();
+    if (!token || !process.env.JWT_SECRET) return null;
+
+    try {
+        const payload = jwt.verify(token, process.env.JWT_SECRET) as AuthTokenPayload;
+        return payload.user?.id || null;
+    } catch {
+        return null;
+    }
+};
+
+export const deleteAccount = async (req: Request, res: Response): Promise<void> => {
+    const userId = getAuthenticatedUserId(req);
+    const password = String(req.body?.password || "");
+
+    if (!userId) {
+        res.status(401).json({ success: false, message: "Your session has expired. Please sign in again." });
+        return;
+    }
+    if (!password) {
+        res.status(400).json({ success: false, message: "Enter your current password to continue" });
+        return;
+    }
+
+    try {
+        const user = await User.findById(userId);
+        if (!user) {
+            res.status(401).json({ success: false, message: "Account not found" });
+            return;
+        }
+
+        const passwordMatches = await bcrypt.compare(password, user.password);
+        if (!passwordMatches) {
+            res.status(403).json({ success: false, message: "The password you entered is incorrect" });
+            return;
+        }
+
+        const conversations = await Conversation.find({ participants: user._id })
+            .select("_id type participants createdBy")
+            .lean();
+        const directConversationIds = conversations
+            .filter((conversation) => conversation.type === "direct")
+            .map((conversation) => conversation._id);
+        const groupConversations = conversations.filter((conversation) => conversation.type === "group");
+
+        if (directConversationIds.length) {
+            await Message.deleteMany({ conversationId: { $in: directConversationIds } });
+            await Conversation.deleteMany({ _id: { $in: directConversationIds } });
+        }
+
+        await Message.deleteMany({ senderId: user._id });
+
+        for (const conversation of groupConversations) {
+            const remainingParticipants = conversation.participants.filter(
+                (participant) => participant.toString() !== user._id.toString()
+            );
+
+            if (!remainingParticipants.length) {
+                await Message.deleteMany({ conversationId: conversation._id });
+                await Conversation.deleteOne({ _id: conversation._id });
+                continue;
+            }
+
+            const latestMessage = await Message.findOne({ conversationId: conversation._id })
+                .sort({ createdAt: -1 })
+                .select("_id")
+                .lean();
+            const update: Record<string, any> = {
+                $pull: { participants: user._id, deletedFor: user._id },
+                $unset: { [`clearedAtBy.${user._id.toString()}`]: 1 },
+            };
+            const setFields: Record<string, any> = {};
+            if (conversation.createdBy?.toString() === user._id.toString()) {
+                setFields.createdBy = remainingParticipants[0];
+            }
+            if (latestMessage?._id) setFields.lastMessage = latestMessage._id;
+            else update.$unset.lastMessage = 1;
+            if (Object.keys(setFields).length) update.$set = setFields;
+            await Conversation.updateOne({ _id: conversation._id }, update);
+        }
+
+        await Promise.all([
+            Post.deleteMany({ author: user._id }),
+            Post.updateMany(
+                { author: { $ne: user._id } },
+                { $pull: { taggedUsers: user._id, likes: user._id, comments: { author: user._id } } }
+            ),
+            Moment.deleteMany({ owner: user._id }),
+            Moment.updateMany(
+                { owner: { $ne: user._id } },
+                { $pull: { contributors: user._id, entries: { author: user._id } } }
+            ),
+            FriendRequest.deleteMany({ $or: [{ sender: user._id }, { recipient: user._id }] }),
+            Activity.deleteMany({ $or: [{ actor: user._id }, { recipient: user._id }] }),
+        ]);
+
+        await User.deleteOne({ _id: user._id });
+        res.status(200).json({ success: true, message: "Your Charcha account has been permanently deleted" });
+    } catch (error) {
+        console.error("Delete account error:", error);
+        res.status(500).json({ success: false, message: "Could not delete the account. Please try again." });
     }
 };
