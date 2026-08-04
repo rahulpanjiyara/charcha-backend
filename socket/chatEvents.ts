@@ -329,13 +329,26 @@ export function registerChatEvents(socket: Socket, io: SocketIoServer) {
         }
       }
       notifyUnreadChanged(io, recipientIds);
+      const notificationParams = new URLSearchParams({
+        id: conversation._id.toString(),
+        type: conversation.type,
+        name: conversation.type === "group" ? conversation.name || "Group" : sender.name || "Friend",
+        avatar: conversation.type === "group" ? conversation.avatar || "" : sender.avatar || "",
+        participants: "[]",
+        targetName: sender.name || "Friend",
+        targetAvatar: sender.avatar || "",
+        targetId: userId,
+      });
       void createActivities({
         recipientIds,
         actorId: userId,
         type: "message",
         title: conversation.type === "group" ? conversation.name || "New group message" : sender.name || "New message",
         body: messageType === "voice" ? "Sent a voice message" : attachment && !content ? "Sent a photo" : content.slice(0, 180),
-        data: { url: "/(main)/main?tab=messages", conversationId: conversation._id.toString() },
+        data: {
+          url: `/(main)/conversation?${notificationParams.toString()}`,
+          conversationId: conversation._id.toString(),
+        },
       });
     } catch (error) {
       console.error("newMessage error", error);
