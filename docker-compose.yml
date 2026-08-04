@@ -15,6 +15,8 @@ services:
       MONGO_URL: "${MONGO_URL:?MONGO_URL is required}"
       JWT_SECRET: "${JWT_SECRET:?JWT_SECRET is required}"
       CORS_ORIGIN: "${CORS_ORIGIN:-*}"
+      TURN_HOST: "${TURN_HOST:-charcha.loan-master.cloud}"
+      TURN_SECRET: "${TURN_SECRET:?TURN_SECRET is required}"
     healthcheck:
       test:
         - CMD
@@ -25,3 +27,24 @@ services:
       timeout: 5s
       start_period: 20s
       retries: 3
+
+  turn:
+    image: coturn/coturn:4.15.0-r0-alpine
+    container_name: charcha-turn
+    restart: unless-stopped
+    network_mode: host
+    command:
+      - --log-file=stdout
+      - --fingerprint
+      - --use-auth-secret
+      - --static-auth-secret=${TURN_SECRET:?TURN_SECRET is required}
+      - --realm=${TURN_HOST:-charcha.loan-master.cloud}
+      - --external-ip=${TURN_PUBLIC_IP:?TURN_PUBLIC_IP is required}
+      - --listening-port=3478
+      - --min-port=49160
+      - --max-port=49200
+      - --no-cli
+      - --no-tls
+      - --no-dtls
+      - --stale-nonce
+      - --no-multicast-peers

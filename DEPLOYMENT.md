@@ -11,6 +11,7 @@ Add these repository secrets:
 - `HOSTINGER_API_KEY`: an API token created in Hostinger hPanel
 - `MONGO_URL`: the production MongoDB connection string
 - `JWT_SECRET`: a long, random production signing secret
+- `TURN_SECRET`: a long random secret used to issue short-lived TURN credentials
 
 The repository must be public for a completely SSH-free deployment with Hostinger's official action. Hostinger requires a GitHub SSH deploy key when it needs to fetch a private repository.
 
@@ -23,7 +24,7 @@ Every push to `main` performs the following steps:
 3. Builds the production Docker image as a validation step.
 4. Sends the Compose project and environment to VPS `1301354` through the Hostinger API.
 
-The Hostinger project name is `charcha-backend`. Node listens on port `3000` inside the container, while Docker binds it to `127.0.0.1:3003` on the VPS. Configure `https://charcha.loan-master.cloud` to proxy to `http://127.0.0.1:3003`.
+The Hostinger project name is `charcha-backend`. Node listens on port `3000` inside the container, while Docker binds it to `127.0.0.1:3003` on the VPS. Configure `https://charcha.loan-master.cloud` to proxy to `http://127.0.0.1:3003`. Coturn listens on TCP/UDP `3478` and uses UDP relay ports `49160-49200`; these ports must be allowed by the VPS firewall.
 
 The workflow can also be started manually from **Actions → Verify and deploy backend → Run workflow**.
 

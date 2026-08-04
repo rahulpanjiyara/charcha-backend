@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHmac, randomUUID } from "node:crypto";
 import type { Server as SocketIoServer, Socket } from "socket.io";
 import Conversation from "../modals/Conversation.js";
 import User from "../modals/User.js";
@@ -23,6 +23,35 @@ function emitToUser(io: SocketIoServer, userId: string, event: string, payload: 
 }
 
 export function registerCallEvents(socket: Socket, io: SocketIoServer) {
+  socket.on("getIceServers", (acknowledge?: (response: unknown) => void) => {
+    if (typeof acknowledge !== "function") return;
+
+    const turnSecret = process.env.TURN_SECRET;
+    const turnHost = process.env.TURN_HOST || "charcha.loan-master.cloud";
+    const iceServers: Array<Record<string, unknown>> = [
+      { urls: "stun:stun.l.google.com:19302" },
+      { urls: "stun:stun1.l.google.com:19302" },
+    ];
+
+    if (turnSecret) {
+      const expiresAt = Math.floor(Date.now() / 1000) + 60 * 60;
+      const username = `${expiresAt}:${String(socket.data.userId)}`;
+      const credential = createHmac("sha1", turnSecret)
+        .update(username)
+        .digest("base64");
+      iceServers.push({
+        urls: [
+          `turn:${turnHost}:3478?transport=udp`,
+          `turn:${turnHost}:3478?transport=tcp`,
+        ],
+        username,
+        credential,
+      });
+    }
+
+    acknowledge({ success: true, data: { iceServers } });
+  });
+
   socket.on("startVideoCall", async (data: { conversationId?: string }) => {
     try {
       const callerId = String(socket.data.userId);

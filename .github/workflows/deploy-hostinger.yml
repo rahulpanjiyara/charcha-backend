@@ -55,3 +55,6 @@ jobs:
             MONGO_URL=${{ secrets.MONGO_URL }}
             JWT_SECRET=${{ secrets.JWT_SECRET }}
             CORS_ORIGIN=*
+            TURN_HOST=charcha.loan-master.cloud
+            TURN_PUBLIC_IP=72.61.226.245
+            TURN_SECRET=${{ secrets.TURN_SECRET }}
