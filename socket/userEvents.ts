@@ -244,6 +244,18 @@ export function registerUserEvents(socket: Socket, io: SocketIoServer) {
         }
     });
 
+    socket.on("setNotificationContext", (data: { appState?: string; activeConversationId?: string | null }) => {
+        const appState = ["active", "background", "inactive"].includes(String(data?.appState))
+            ? String(data.appState)
+            : "unknown";
+        const activeConversationId = typeof data?.activeConversationId === "string"
+            && isValidObjectId(data.activeConversationId)
+            ? data.activeConversationId
+            : null;
+        socket.data.notificationAppState = appState;
+        socket.data.activeConversationId = activeConversationId;
+    });
+
     socket.on("unregisterPushToken", async (data: { token?: string }) => {
         try {
             const token = String(data?.token || "").trim();

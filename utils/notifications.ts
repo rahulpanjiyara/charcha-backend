@@ -3,6 +3,7 @@ import User from "../modals/User.js";
 
 type ActivityInput = {
   recipientIds: string[];
+  pushRecipientIds?: string[];
   actorId?: string;
   type: string;
   title: string;
@@ -122,7 +123,10 @@ export async function createActivities(input: ActivityInput) {
       body: input.body,
       data: input.data || {},
     })));
-    if (input.push !== false) await sendPushToUsers(recipientIds, input.title, input.body, input.data || {});
+    const pushRecipientIds = input.pushRecipientIds
+      ? [...new Set(input.pushRecipientIds.filter((id) => recipientIds.includes(id)))]
+      : recipientIds;
+    if (input.push !== false) await sendPushToUsers(pushRecipientIds, input.title, input.body, input.data || {});
   } catch (error) {
     // Notification failures must never interrupt the user action that created them.
     console.error("Could not create activity notifications", error);

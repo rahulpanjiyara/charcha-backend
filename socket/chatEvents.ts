@@ -312,6 +312,15 @@ export function registerChatEvents(socket: Socket, io: SocketIoServer) {
       const recipientIds = conversation.participants
         .map((id) => id.toString())
         .filter((id) => id !== userId);
+      const pushRecipientIds = recipientIds.filter((recipientId) => {
+        const viewingThisChat = Array.from(io.sockets.sockets.values()).some(
+          (client) => client.connected
+            && String(client.data.userId) === recipientId
+            && client.data.notificationAppState === "active"
+            && String(client.data.activeConversationId || "") === conversation._id.toString()
+        );
+        return !viewingThisChat;
+      });
       for (const client of io.sockets.sockets.values()) {
         if (recipientIds.includes(String(client.data.userId))) {
           client.emit("messageNotification", {
@@ -341,6 +350,7 @@ export function registerChatEvents(socket: Socket, io: SocketIoServer) {
       });
       void createActivities({
         recipientIds,
+        pushRecipientIds,
         actorId: userId,
         type: "message",
         title: conversation.type === "group" ? conversation.name || "New group message" : sender.name || "New message",
