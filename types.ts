@@ -9,6 +9,10 @@ export interface UserProps extends Document {
   status?: string;
   mobile?: string;
   pushTokens?: string[];
+  passwordResetCodeHash?: string;
+  passwordResetExpiresAt?: Date;
+  passwordResetRequestedAt?: Date;
+  passwordResetAttempts?: number;
   created?: Date;
 }
 

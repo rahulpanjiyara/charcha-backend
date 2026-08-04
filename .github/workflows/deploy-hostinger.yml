@@ -58,3 +58,7 @@ jobs:
             TURN_HOST=charcha.loan-master.cloud
             TURN_PUBLIC_IP=72.61.226.245
             TURN_SECRET=${{ secrets.TURN_SECRET }}
+            RESEND_API_KEY=${{ secrets.RESEND_API_KEY }}
+            RESEND_FROM_EMAIL=${{ secrets.RESEND_FROM_EMAIL }}
+            ANDROID_LATEST_VERSION_CODE=${{ vars.ANDROID_LATEST_VERSION_CODE || '3' }}
+            ANDROID_MIN_VERSION_CODE=${{ vars.ANDROID_MIN_VERSION_CODE || '3' }}

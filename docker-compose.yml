@@ -17,6 +17,10 @@ services:
       CORS_ORIGIN: "${CORS_ORIGIN:-*}"
       TURN_HOST: "${TURN_HOST:-charcha.loan-master.cloud}"
       TURN_SECRET: "${TURN_SECRET:?TURN_SECRET is required}"
+      RESEND_API_KEY: "${RESEND_API_KEY:?RESEND_API_KEY is required}"
+      RESEND_FROM_EMAIL: "${RESEND_FROM_EMAIL:-Charcha <onboarding@resend.dev>}"
+      ANDROID_LATEST_VERSION_CODE: "${ANDROID_LATEST_VERSION_CODE:-3}"
+      ANDROID_MIN_VERSION_CODE: "${ANDROID_MIN_VERSION_CODE:-3}"
     healthcheck:
       test:
         - CMD

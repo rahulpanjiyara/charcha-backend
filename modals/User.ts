@@ -37,8 +37,12 @@ const userSchema = new Schema<UserProps>({
         type:String,
         default:'',
         trim:true,
-        maxlength:24,
+        maxlength:16,
     },
+    passwordResetCodeHash: { type: String, select: false },
+    passwordResetExpiresAt: { type: Date, select: false },
+    passwordResetRequestedAt: { type: Date, select: false },
+    passwordResetAttempts: { type: Number, default: 0, select: false },
     pushTokens: {
         type: [String],
         default: [],

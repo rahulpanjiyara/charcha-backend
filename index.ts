@@ -133,6 +133,19 @@ app.get("/health", (_req, res) => {
   });
 });
 
+app.get("/app-version", (_req, res) => {
+  const latestVersionCode = Math.max(1, Number.parseInt(process.env.ANDROID_LATEST_VERSION_CODE || "3", 10) || 3);
+  const minimumVersionCode = Math.max(1, Number.parseInt(process.env.ANDROID_MIN_VERSION_CODE || String(latestVersionCode), 10) || latestVersionCode);
+
+  res.json({
+    android: {
+      latestVersionCode,
+      minimumVersionCode,
+      storeUrl: "https://play.google.com/store/apps/details?id=com.rahulpanjiyara.charcha",
+    },
+  });
+});
+
 /* -------------------- SOCKET.IO -------------------- */
 initializeSocket(server);
 

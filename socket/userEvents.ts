@@ -1,6 +1,7 @@
 import type { Socket, Server as SocketIoServer } from "socket.io";
 import User from "../modals/User.js";
 import { generateToken } from "../utils/token.js";
+import { isValidMobile, mobileLookup, normalizeMobile } from "../utils/identity.js";
 import FriendRequest from "../modals/FriendRequest.js";
 import { isValidObjectId, Types } from "mongoose";
 import Post from "../modals/Post.js";
@@ -281,12 +282,30 @@ export function registerUserEvents(socket: Socket, io: SocketIoServer) {
             const avatar = typeof data?.avatar === "string" ? data.avatar : "";
             const about = String(data?.about || "").trim().slice(0, 300);
             const profileStatus = String(data?.status || "Available").trim().slice(0, 80) || "Available";
-            const mobile = String(data?.mobile || "").trim().slice(0, 24);
+            const mobile = normalizeMobile(data?.mobile);
             if (!name) {
                 return socket.emit("updateProfile", {
                     success: false,
                     msg: "Name is required",
                 });
+            }
+            if (mobile && !isValidMobile(mobile)) {
+                return socket.emit("updateProfile", {
+                    success: false,
+                    msg: "Enter a valid mobile number with 7 to 15 digits",
+                });
+            }
+            if (mobile) {
+                const duplicateMobile = await User.exists({
+                    _id: { $ne: userId },
+                    mobile: mobileLookup(mobile),
+                });
+                if (duplicateMobile) {
+                    return socket.emit("updateProfile", {
+                        success: false,
+                        msg: "This mobile number is already registered",
+                    });
+                }
             }
             const updatedUser = await User.findByIdAndUpdate(
                 userId,

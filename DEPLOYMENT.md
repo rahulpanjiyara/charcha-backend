@@ -12,6 +12,13 @@ Add these repository secrets:
 - `MONGO_URL`: the production MongoDB connection string
 - `JWT_SECRET`: a long, random production signing secret
 - `TURN_SECRET`: a long random secret used to issue short-lived TURN credentials
+- `RESEND_API_KEY`: the Resend API key used for password-reset email
+- `RESEND_FROM_EMAIL`: a verified Resend sender, for example `Charcha <noreply@example.com>`
+
+Add these repository variables and set both to the version code currently available on Google Play:
+
+- `ANDROID_LATEST_VERSION_CODE`
+- `ANDROID_MIN_VERSION_CODE` (setting this to the latest code makes the update mandatory)
 
 The repository must be public for a completely SSH-free deployment with Hostinger's official action. Hostinger requires a GitHub SSH deploy key when it needs to fetch a private repository.
 
