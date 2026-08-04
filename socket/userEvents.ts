@@ -125,6 +125,46 @@ export function registerUserEvents(socket: Socket, io: SocketIoServer) {
         }
     });
 
+    socket.on("updateMomentContributors", async (data: { momentId?: string; contributorIds?: string[] }) => {
+        try {
+            const userId = String(socket.data.userId);
+            if (!data?.momentId || !isValidObjectId(data.momentId)) {
+                return socket.emit("updateMomentContributors", { success: false, msg: "Invalid Moment" });
+            }
+            const moment: any = await Moment.findOne({ _id: data.momentId, owner: userId });
+            if (!moment) {
+                return socket.emit("updateMomentContributors", { success: false, msg: "Only the creator can edit contributors" });
+            }
+            const requestedIds = [...new Set((Array.isArray(data?.contributorIds) ? data.contributorIds : []).map(String))]
+                .filter((id) => isValidObjectId(id) && id !== userId)
+                .slice(0, 12);
+            const friendIds = await friendIdsFor(userId);
+            const contributorIds = requestedIds.filter((id) => friendIds.includes(id));
+            if (contributorIds.length !== requestedIds.length) {
+                return socket.emit("updateMomentContributors", { success: false, msg: "Only current friends can be contributors" });
+            }
+            const previousIds = moment.contributors.map((id: any) => id.toString());
+            const addedIds = contributorIds.filter((id) => !previousIds.includes(id));
+            moment.contributors = contributorIds.map((id) => new Types.ObjectId(id));
+            await moment.save();
+            socket.emit("updateMomentContributors", { success: true, data: { momentId: moment._id.toString() }, msg: "Contributors updated" });
+            emitMomentsChanged(io, [userId, ...previousIds, ...contributorIds]);
+            if (addedIds.length) {
+                void createActivities({
+                    recipientIds: addedIds,
+                    actorId: userId,
+                    type: "moment_invite",
+                    title: "A Moment to share",
+                    body: `${socket.data.user?.name || "A friend"} invited you to add photos to ${moment.title}`,
+                    data: { url: "/(main)/moments", momentId: moment._id.toString() },
+                });
+            }
+        } catch (error) {
+            console.error("updateMomentContributors error", error);
+            socket.emit("updateMomentContributors", { success: false, msg: "Could not update contributors" });
+        }
+    });
+
     socket.on("addMomentEntry", async (data: { momentId?: string; image?: string; caption?: string }) => {
         try {
             const userId = String(socket.data.userId);
@@ -806,6 +846,46 @@ export function registerUserEvents(socket: Socket, io: SocketIoServer) {
         } catch (error) {
             console.error("createPost error", error);
             socket.emit("createPost", { success: false, msg: "Could not create post" });
+        }
+    });
+
+    socket.on("updatePostTags", async (data: { postId?: string; taggedUserIds?: string[] }) => {
+        try {
+            const userId = String(socket.data.userId);
+            if (!data?.postId || !isValidObjectId(data.postId)) {
+                return socket.emit("updatePostTags", { success: false, msg: "Invalid post" });
+            }
+            const post: any = await Post.findOne({ _id: data.postId, author: userId });
+            if (!post) return socket.emit("updatePostTags", { success: false, msg: "Only the post owner can edit tags" });
+            const requestedIds = [...new Set((Array.isArray(data?.taggedUserIds) ? data.taggedUserIds : []).map(String))]
+                .filter((id) => isValidObjectId(id) && id !== userId)
+                .slice(0, 10);
+            const friendIds = await friendIdsFor(userId);
+            const taggedUserIds = requestedIds.filter((id) => friendIds.includes(id));
+            if (taggedUserIds.length !== requestedIds.length) {
+                return socket.emit("updatePostTags", { success: false, msg: "You can only tag current friends" });
+            }
+            const previousIds = post.taggedUsers.map((id: any) => id.toString());
+            const addedIds = taggedUserIds.filter((id) => !previousIds.includes(id));
+            post.taggedUsers = taggedUserIds.map((id) => new Types.ObjectId(id));
+            await post.save();
+            socket.emit("updatePostTags", { success: true, data: { postId: post._id.toString() }, msg: "Tags updated" });
+            if (addedIds.length) {
+                void createActivities({
+                    recipientIds: addedIds,
+                    actorId: userId,
+                    type: "post_tag",
+                    title: "You were tagged",
+                    body: `${socket.data.user?.name || "A friend"} tagged you in a post`,
+                    data: { url: "/(main)/main?tab=community", postId: post._id.toString() },
+                });
+            }
+            for (const client of io.sockets.sockets.values()) {
+                if ([userId, ...friendIds].includes(String(client.data.userId))) client.emit("feedChanged", { success: true });
+            }
+        } catch (error) {
+            console.error("updatePostTags error", error);
+            socket.emit("updatePostTags", { success: false, msg: "Could not update tags" });
         }
     });
 
