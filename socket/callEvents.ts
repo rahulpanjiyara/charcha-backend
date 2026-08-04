@@ -41,10 +41,6 @@ export function registerCallEvents(socket: Socket, io: SocketIoServer) {
         .find((participantId) => participantId !== callerId);
       if (!calleeId) return socket.emit("callFailed", { success: false, msg: "Friend not found" });
 
-      const recipientOnline = Array.from(io.sockets.sockets.values()).some(
-        (client) => client.connected && String(client.data.userId) === calleeId
-      );
-
       const caller = await User.findById(callerId).select("name avatar").lean();
       const callerInfo = {
         id: callerId,
@@ -76,14 +72,15 @@ export function registerCallEvents(socket: Socket, io: SocketIoServer) {
         conversationId: conversation._id.toString(),
         caller: callerInfo,
       });
-      if (!recipientOnline) {
-        await sendPushToUsers(
-          [calleeId],
-          `${callerInfo.name} is calling`,
-          "Incoming video call · Tap to answer",
-          { type: "video_call", callId, conversationId: conversation._id.toString() }
-        );
-      }
+      // A backgrounded mobile app can retain its socket while JavaScript is
+      // suspended. Always send a push so calls can ring when minimized/closed;
+      // the socket event still provides the immediate in-app call UI.
+      await sendPushToUsers(
+        [calleeId],
+        `${callerInfo.name} is calling`,
+        "Incoming video call · Tap to answer",
+        { type: "video_call", callId, conversationId: conversation._id.toString() }
+      );
     } catch (error) {
       console.error("Failed to start video call", error);
       socket.emit("callFailed", { success: false, msg: "Could not start the video call" });
