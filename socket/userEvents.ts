@@ -58,6 +58,7 @@ const serializeMoment = (moment: any, userId: string) => ({
         image: entry.image,
         caption: entry.caption || "",
         createdAt: entry.createdAt,
+        canDelete: moment.owner?._id?.toString() === userId || entry.author?._id?.toString() === userId,
     })),
     isOwner: moment.owner?._id?.toString() === userId,
     canContribute: moment.owner?._id?.toString() === userId
@@ -191,6 +192,36 @@ export function registerUserEvents(socket: Socket, io: SocketIoServer) {
         } catch (error) {
             console.error("addMomentEntry error", error);
             socket.emit("addMomentEntry", { success: false, msg: "Could not add this photo" });
+        }
+    });
+
+    socket.on("deleteMomentEntry", async (data: { momentId?: string; entryId?: string }) => {
+        try {
+            const userId = String(socket.data.userId);
+            if (!data?.momentId || !data?.entryId || !isValidObjectId(data.momentId) || !isValidObjectId(data.entryId)) {
+                return socket.emit("deleteMomentEntry", { success: false, msg: "Invalid Moment photo" });
+            }
+            const moment: any = await Moment.findById(data.momentId);
+            if (!moment) return socket.emit("deleteMomentEntry", { success: false, msg: "Moment not found" });
+            const entry: any = moment.entries.id(data.entryId);
+            if (!entry) return socket.emit("deleteMomentEntry", { success: false, msg: "Photo not found" });
+            const isOwner = moment.owner.toString() === userId;
+            const isAuthor = entry.author.toString() === userId;
+            if (!isOwner && !isAuthor) {
+                return socket.emit("deleteMomentEntry", { success: false, msg: "You can only delete photos you added" });
+            }
+            moment.entries.pull({ _id: data.entryId });
+            await moment.save();
+            const memberIds = [moment.owner.toString(), ...moment.contributors.map((id: any) => id.toString())];
+            socket.emit("deleteMomentEntry", {
+                success: true,
+                data: { momentId: data.momentId, entryId: data.entryId },
+                msg: "Photo deleted",
+            });
+            emitMomentsChanged(io, memberIds);
+        } catch (error) {
+            console.error("deleteMomentEntry error", error);
+            socket.emit("deleteMomentEntry", { success: false, msg: "Could not delete this photo" });
         }
     });
 
