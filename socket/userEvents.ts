@@ -380,8 +380,16 @@ export function registerUserEvents(socket: Socket, io: SocketIoServer) {
             if (!isValidObjectId(requestedId)) {
                 return socket.emit("getUserProfile", { success: false, msg: "Invalid user" });
             }
-            const profile = await User.findById(requestedId).select("name email avatar about status mobile created").lean();
+            const [profile, viewer] = await Promise.all([
+                User.findById(requestedId).select("name email avatar about status mobile created blockedUsers").lean(),
+                User.findById(viewerId).select("blockedUsers").lean(),
+            ]);
             if (!profile) return socket.emit("getUserProfile", { success: false, msg: "User not found" });
+            const blockedByProfile = (profile.blockedUsers || []).some((id: any) => id.toString() === viewerId);
+            if (requestedId !== viewerId && blockedByProfile) {
+                return socket.emit("getUserProfile", { success: false, msg: "This profile is unavailable" });
+            }
+            const blockedByMe = (viewer?.blockedUsers || []).some((id: any) => id.toString() === requestedId);
             const relationshipDocument = requestedId === viewerId ? null : await FriendRequest.findOne({
                 $or: [
                     { sender: viewerId, recipient: requestedId },
@@ -391,6 +399,8 @@ export function registerUserEvents(socket: Socket, io: SocketIoServer) {
             }).lean();
             const relationship = requestedId === viewerId
                 ? "self"
+                : blockedByMe
+                    ? "blocked"
                 : relationshipDocument?.status === "accepted"
                     ? "friends"
                     : relationshipDocument?.sender.toString() === viewerId
@@ -573,7 +583,7 @@ export function registerUserEvents(socket: Socket, io: SocketIoServer) {
     socket.on("getFriendData", async () => {
         try {
             const userId = String(socket.data.userId);
-            const [relationships, users, directConversations] = await Promise.all([
+            const [relationships, users, directConversations, currentUser, usersBlockingMe] = await Promise.all([
                 FriendRequest.find({
                     $or: [{ sender: userId }, { recipient: userId }],
                     status: { $in: ["pending", "accepted"] },
@@ -582,6 +592,12 @@ export function registerUserEvents(socket: Socket, io: SocketIoServer) {
                 Conversation.find({ type: "direct", participants: userId, deletedFor: { $ne: userId } })
                     .select("_id participants clearedAtBy")
                     .lean(),
+                User.findById(userId).select("blockedUsers").lean(),
+                User.find({ blockedUsers: userId }).select("_id").lean(),
+            ]);
+            const blockedIds = new Set([
+                ...(currentUser?.blockedUsers || []).map((id: any) => id.toString()),
+                ...usersBlockingMe.map((blockedUser) => blockedUser._id.toString()),
             ]);
 
             const directConversationIds = directConversations.map((conversation) => conversation._id);
@@ -627,6 +643,7 @@ export function registerUserEvents(socket: Socket, io: SocketIoServer) {
                 const senderId = relationship.sender.toString();
                 const recipientId = relationship.recipient.toString();
                 const otherId = senderId === userId ? recipientId : senderId;
+                if (blockedIds.has(otherId)) continue;
                 const other = usersById.get(otherId);
                 if (!other) continue;
                 relatedIds.add(otherId);
@@ -637,7 +654,7 @@ export function registerUserEvents(socket: Socket, io: SocketIoServer) {
             }
 
             const suggestions = users
-                .filter((user) => !relatedIds.has(user._id.toString()))
+                .filter((user) => !relatedIds.has(user._id.toString()) && !blockedIds.has(user._id.toString()))
                 .map((user) => ({ ...publicUser(user), online: onlineIds.has(user._id.toString()) }));
 
             socket.emit("getFriendData", {
@@ -659,6 +676,13 @@ export function registerUserEvents(socket: Socket, io: SocketIoServer) {
             }
             const recipientExists = await User.exists({ _id: recipientId });
             if (!recipientExists) return socket.emit("sendFriendRequest", { success: false, msg: "User not found" });
+            const blocked = await User.exists({
+                $or: [
+                    { _id: senderId, blockedUsers: recipientId },
+                    { _id: recipientId, blockedUsers: senderId },
+                ],
+            });
+            if (blocked) return socket.emit("sendFriendRequest", { success: false, msg: "Friend request is not available" });
 
             const existing = await FriendRequest.findOne({
                 $or: [
@@ -734,6 +758,57 @@ export function registerUserEvents(socket: Socket, io: SocketIoServer) {
         } catch (error) {
             console.error("respondFriendRequest error", error);
             socket.emit("respondFriendRequest", { success: false, msg: "Could not update request" });
+        }
+    });
+
+    socket.on("removeFriend", async (data: { userId?: string }) => {
+        try {
+            const userId = String(socket.data.userId);
+            const otherUserId = String(data?.userId || "");
+            if (!isValidObjectId(otherUserId) || otherUserId === userId) {
+                return socket.emit("removeFriend", { success: false, msg: "Invalid user" });
+            }
+            const relationship = await FriendRequest.findOneAndDelete({
+                status: "accepted",
+                $or: [
+                    { sender: userId, recipient: otherUserId },
+                    { sender: otherUserId, recipient: userId },
+                ],
+            });
+            if (!relationship) return socket.emit("removeFriend", { success: false, msg: "Friendship no longer exists" });
+            socket.emit("removeFriend", { success: true, data: { userId: otherUserId } });
+            notifyFriendDataChanged(io, [userId, otherUserId]);
+        } catch (error) {
+            console.error("removeFriend error", error);
+            socket.emit("removeFriend", { success: false, msg: "Could not remove friend" });
+        }
+    });
+
+    socket.on("blockUser", async (data: { userId?: string; blocked?: boolean }) => {
+        try {
+            const userId = String(socket.data.userId);
+            const otherUserId = String(data?.userId || "");
+            if (!isValidObjectId(otherUserId) || otherUserId === userId) {
+                return socket.emit("blockUser", { success: false, msg: "Invalid user" });
+            }
+            const blocked = data?.blocked !== false;
+            await User.updateOne(
+                { _id: userId },
+                blocked ? { $addToSet: { blockedUsers: otherUserId } } : { $pull: { blockedUsers: otherUserId } }
+            );
+            if (blocked) {
+                await FriendRequest.deleteMany({
+                    $or: [
+                        { sender: userId, recipient: otherUserId },
+                        { sender: otherUserId, recipient: userId },
+                    ],
+                });
+            }
+            socket.emit("blockUser", { success: true, data: { userId: otherUserId, blocked } });
+            notifyFriendDataChanged(io, [userId, otherUserId]);
+        } catch (error) {
+            console.error("blockUser error", error);
+            socket.emit("blockUser", { success: false, msg: "Could not update block setting" });
         }
     });
 

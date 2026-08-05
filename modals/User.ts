@@ -47,6 +47,7 @@ const userSchema = new Schema<UserProps>({
         type: [String],
         default: [],
     },
+    blockedUsers: [{ type: Schema.Types.ObjectId, ref: "User" }],
     created:{
         type:Date,
         default:Date.now,

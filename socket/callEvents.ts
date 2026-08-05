@@ -10,6 +10,7 @@ type PendingCall = {
   callerId: string;
   calleeId: string;
   caller: { id: string; name: string; avatar: string | null };
+  callType: "audio" | "video";
   accepted: boolean;
   timeout: NodeJS.Timeout;
 };
@@ -52,9 +53,10 @@ export function registerCallEvents(socket: Socket, io: SocketIoServer) {
     acknowledge({ success: true, data: { iceServers } });
   });
 
-  socket.on("startVideoCall", async (data: { conversationId?: string }) => {
+  socket.on("startVideoCall", async (data: { conversationId?: string; callType?: "audio" | "video" }) => {
     try {
       const callerId = String(socket.data.userId);
+      const callType = data?.callType === "audio" ? "audio" : "video";
       const conversation = await Conversation.findOne({
         _id: data?.conversationId,
         type: "direct",
@@ -62,7 +64,7 @@ export function registerCallEvents(socket: Socket, io: SocketIoServer) {
       }).lean();
 
       if (!conversation) {
-        return socket.emit("callFailed", { success: false, msg: "Video calls are available in direct chats only" });
+        return socket.emit("callFailed", { success: false, msg: "Calls are available in direct chats only" });
       }
 
       const calleeId = conversation.participants
@@ -91,15 +93,17 @@ export function registerCallEvents(socket: Socket, io: SocketIoServer) {
         callerId,
         calleeId,
         caller: callerInfo,
+        callType,
         accepted: false,
         timeout,
       });
 
-      socket.emit("callStarted", { success: true, data: { callId } });
+      socket.emit("callStarted", { success: true, data: { callId, callType } });
       emitToUser(io, calleeId, "incomingVideoCall", {
         callId,
         conversationId: conversation._id.toString(),
         caller: callerInfo,
+        callType,
       });
       // A backgrounded mobile app can retain its socket while JavaScript is
       // suspended. Always send a push so calls can ring when minimized/closed;
@@ -107,12 +111,12 @@ export function registerCallEvents(socket: Socket, io: SocketIoServer) {
       await sendPushToUsers(
         [calleeId],
         `${callerInfo.name} is calling`,
-        "Incoming video call · Tap to answer",
-        { type: "video_call", callId, conversationId: conversation._id.toString() }
+        `Incoming ${callType === "audio" ? "voice" : "video"} call · Tap to answer`,
+        { type: `${callType}_call`, callId, conversationId: conversation._id.toString(), callType }
       );
     } catch (error) {
-      console.error("Failed to start video call", error);
-      socket.emit("callFailed", { success: false, msg: "Could not start the video call" });
+      console.error("Failed to start call", error);
+      socket.emit("callFailed", { success: false, msg: "Could not start the call" });
     }
   });
 
@@ -126,6 +130,7 @@ export function registerCallEvents(socket: Socket, io: SocketIoServer) {
       callId: call.callId,
       conversationId: call.conversationId,
       caller: call.caller,
+      callType: call.callType,
     });
   });
 
@@ -149,11 +154,13 @@ export function registerCallEvents(socket: Socket, io: SocketIoServer) {
       callId: call.callId,
       conversationId: call.conversationId,
       isInitiator: true,
+      callType: call.callType,
     });
     emitToUser(io, call.calleeId, "callAccepted", {
       callId: call.callId,
       conversationId: call.conversationId,
       isInitiator: false,
+      callType: call.callType,
     });
   });
 

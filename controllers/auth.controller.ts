@@ -223,6 +223,39 @@ export const resetPassword = async (req: Request, res: Response): Promise<void> 
     }
 };
 
+export const changePassword = async (req: Request, res: Response): Promise<void> => {
+    const userId = getAuthenticatedUserId(req);
+    const currentPassword = String(req.body?.currentPassword || "");
+    const newPassword = String(req.body?.newPassword || "");
+
+    if (!userId) {
+        res.status(401).json({ success: false, message: "Your session has expired. Please sign in again." });
+        return;
+    }
+    if (!currentPassword || newPassword.length < 8) {
+        res.status(400).json({ success: false, message: "Enter your current password and a new password of at least 8 characters" });
+        return;
+    }
+    if (currentPassword === newPassword) {
+        res.status(400).json({ success: false, message: "Choose a password different from your current password" });
+        return;
+    }
+
+    try {
+        const user = await User.findById(userId);
+        if (!user || !(await bcrypt.compare(currentPassword, user.password))) {
+            res.status(403).json({ success: false, message: "The current password is incorrect" });
+            return;
+        }
+        user.password = await bcrypt.hash(newPassword, 10);
+        await user.save();
+        res.status(200).json({ success: true, message: "Password changed successfully" });
+    } catch (error) {
+        console.error("Change password error:", error);
+        res.status(500).json({ success: false, message: "Could not change the password. Please try again." });
+    }
+};
+
 type AuthTokenPayload = { user?: { id?: string } };
 
 const getAuthenticatedUserId = (req: Request) => {
@@ -323,6 +356,7 @@ export const deleteAccount = async (req: Request, res: Response): Promise<void> 
             ),
             FriendRequest.deleteMany({ $or: [{ sender: user._id }, { recipient: user._id }] }),
             Activity.deleteMany({ $or: [{ actor: user._id }, { recipient: user._id }] }),
+            User.updateMany({ blockedUsers: user._id }, { $pull: { blockedUsers: user._id } }),
         ]);
 
         await User.deleteOne({ _id: user._id });

@@ -313,13 +313,12 @@ export function registerChatEvents(socket: Socket, io: SocketIoServer) {
         .map((id) => id.toString())
         .filter((id) => id !== userId);
       const pushRecipientIds = recipientIds.filter((recipientId) => {
-        const viewingThisChat = Array.from(io.sockets.sockets.values()).some(
+        const appIsOpen = Array.from(io.sockets.sockets.values()).some(
           (client) => client.connected
             && String(client.data.userId) === recipientId
             && client.data.notificationAppState === "active"
-            && String(client.data.activeConversationId || "") === conversation._id.toString()
         );
-        return !viewingThisChat;
+        return !appIsOpen;
       });
       for (const client of io.sockets.sockets.values()) {
         if (recipientIds.includes(String(client.data.userId))) {
