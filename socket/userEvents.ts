@@ -301,14 +301,26 @@ export function registerUserEvents(socket: Socket, io: SocketIoServer) {
         }
     });
 
-    socket.on("registerPushToken", async (data: { token?: string }) => {
+    socket.on("registerPushToken", async (data: { token?: string; nativeCallUi?: boolean }) => {
         try {
             const token = String(data?.token || "").trim();
             if (!/^(ExponentPushToken|ExpoPushToken)\[.+\]$/.test(token)) {
                 return socket.emit("registerPushToken", { success: false, msg: "Invalid push token" });
             }
-            await User.updateMany({ _id: { $ne: socket.data.userId }, pushTokens: token }, { $pull: { pushTokens: token } });
-            await User.findByIdAndUpdate(socket.data.userId, { $addToSet: { pushTokens: token } });
+            await User.updateMany(
+                { _id: { $ne: socket.data.userId }, $or: [{ pushTokens: token }, { nativeCallTokens: token }] },
+                { $pull: { pushTokens: token, nativeCallTokens: token } },
+            );
+            if (data?.nativeCallUi === true) {
+                await User.findByIdAndUpdate(socket.data.userId, {
+                    $addToSet: { pushTokens: token, nativeCallTokens: token },
+                });
+            } else {
+                await User.findByIdAndUpdate(socket.data.userId, {
+                    $addToSet: { pushTokens: token },
+                    $pull: { nativeCallTokens: token },
+                });
+            }
             socket.emit("registerPushToken", { success: true });
         } catch (error) {
             console.error("registerPushToken error", error);
@@ -331,7 +343,7 @@ export function registerUserEvents(socket: Socket, io: SocketIoServer) {
     socket.on("unregisterPushToken", async (data: { token?: string }) => {
         try {
             const token = String(data?.token || "").trim();
-            if (token) await User.findByIdAndUpdate(socket.data.userId, { $pull: { pushTokens: token } });
+            if (token) await User.findByIdAndUpdate(socket.data.userId, { $pull: { pushTokens: token, nativeCallTokens: token } });
             socket.emit("unregisterPushToken", { success: true });
         } catch (error) {
             console.error("unregisterPushToken error", error);

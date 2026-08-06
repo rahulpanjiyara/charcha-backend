@@ -84,6 +84,13 @@ export function registerCallEvents(socket: Socket, io: SocketIoServer) {
         if (!call) return;
         emitToUser(io, callerId, "callDeclined", { callId, reason: "No answer" });
         emitToUser(io, calleeId, "callEnded", { callId, reason: "Missed call" });
+        void sendPushToUsers(
+          [calleeId],
+          "Call ended",
+          "Missed call",
+          { type: "call_ended", callId, reason: "missed" },
+          { headless: true, ttl: 45 },
+        );
         pendingCalls.delete(callId);
       }, 45_000);
 
@@ -105,15 +112,33 @@ export function registerCallEvents(socket: Socket, io: SocketIoServer) {
         caller: callerInfo,
         callType,
       });
-      // A backgrounded mobile app can retain its socket while JavaScript is
-      // suspended. Always send a push so calls can ring when minimized/closed;
-      // the socket event still provides the immediate in-app call UI.
-      await sendPushToUsers(
-        [calleeId],
-        `${callerInfo.name} is calling`,
-        `Incoming ${callType === "audio" ? "voice" : "video"} call · Tap to answer`,
-        { type: `${callType}_call`, callId, conversationId: conversation._id.toString(), callType }
-      );
+      // A data-only push wakes the Android background task, which registers the
+      // call with ConnectionService. Foreground clients use the socket UI.
+      const callPushData = {
+        type: `${callType}_call`,
+        callId,
+        conversationId: conversation._id.toString(),
+        callType,
+        callerId: callerInfo.id,
+        callerName: callerInfo.name,
+        callerAvatar: callerInfo.avatar,
+      };
+      await Promise.all([
+        sendPushToUsers(
+          [calleeId],
+          `${callerInfo.name} is calling`,
+          `Incoming ${callType === "audio" ? "voice" : "video"} call · Tap to answer`,
+          callPushData,
+          { headless: true, ttl: 45, tokenMode: "native" },
+        ),
+        sendPushToUsers(
+          [calleeId],
+          `${callerInfo.name} is calling`,
+          `Incoming ${callType === "audio" ? "voice" : "video"} call · Tap to answer`,
+          callPushData,
+          { ttl: 45, tokenMode: "legacy" },
+        ),
+      ]);
     } catch (error) {
       console.error("Failed to start call", error);
       socket.emit("callFailed", { success: false, msg: "Could not start the call" });
@@ -125,13 +150,22 @@ export function registerCallEvents(socket: Socket, io: SocketIoServer) {
     const call = data?.callId
       ? pendingCalls.get(data.callId)
       : Array.from(pendingCalls.values()).find((pendingCall) => pendingCall.calleeId === userId && !pendingCall.accepted);
-    if (!call || call.calleeId !== userId || call.accepted) return;
+    if (!call || call.calleeId !== userId) return;
     socket.emit("incomingVideoCall", {
       callId: call.callId,
       conversationId: call.conversationId,
       caller: call.caller,
       callType: call.callType,
+      accepted: call.accepted,
     });
+    if (call.accepted) {
+      socket.emit("callAccepted", {
+        callId: call.callId,
+        conversationId: call.conversationId,
+        isInitiator: false,
+        callType: call.callType,
+      });
+    }
   });
 
   socket.on("respondVideoCall", (data: { callId?: string; accepted?: boolean }) => {
@@ -145,6 +179,13 @@ export function registerCallEvents(socket: Socket, io: SocketIoServer) {
     if (!data.accepted) {
       emitToUser(io, call.callerId, "callDeclined", { callId: call.callId, reason: "Call declined" });
       emitToUser(io, call.calleeId, "callEnded", { callId: call.callId, reason: "Call declined" });
+      void sendPushToUsers(
+        [call.calleeId],
+        "Call ended",
+        "Call declined",
+        { type: "call_ended", callId: call.callId, reason: "declined" },
+        { headless: true, ttl: 45 },
+      );
       pendingCalls.delete(call.callId);
       return;
     }
@@ -194,6 +235,13 @@ export function registerCallEvents(socket: Socket, io: SocketIoServer) {
     clearTimeout(call.timeout);
     const otherUserId = call.callerId === userId ? call.calleeId : call.callerId;
     emitToUser(io, otherUserId, "callEnded", { callId: call.callId, reason: "Call ended" });
+    void sendPushToUsers(
+      [otherUserId],
+      "Call ended",
+      "The call has ended",
+      { type: "call_ended", callId: call.callId, reason: "ended" },
+      { headless: true, ttl: 45 },
+    );
     pendingCalls.delete(call.callId);
   });
 

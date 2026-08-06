@@ -9,6 +9,7 @@ export interface UserProps extends Document {
   status?: string;
   mobile?: string;
   pushTokens?: string[];
+  nativeCallTokens?: string[];
   blockedUsers?: Types.ObjectId[];
   passwordResetCodeHash?: string;
   passwordResetExpiresAt?: Date;
