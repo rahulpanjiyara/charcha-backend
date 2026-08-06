@@ -29,6 +29,10 @@ const messageSchema = new mongoose.Schema({
         type:mongoose.Schema.Types.ObjectId,
         ref:"User",
     }],
+    deliveredTo:[{
+        type:mongoose.Schema.Types.ObjectId,
+        ref:"User",
+    }],
     expiresAt: {
         type: Date,
         default: null,

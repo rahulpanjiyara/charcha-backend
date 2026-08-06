@@ -62,6 +62,50 @@ function notifyUnreadChanged(io: SocketIoServer, userIds: string[]) {
   }
 }
 
+function emitReceiptUpdate(
+  io: SocketIoServer,
+  conversationId: string,
+  messageIds: string[],
+  receipt: { deliveredBy?: string; readBy?: string }
+) {
+  if (!messageIds.length) return;
+  io.to(conversationId).emit("messageReceiptUpdated", {
+    success: true,
+    data: { conversationId, messageIds, ...receipt },
+  });
+}
+
+export async function markUserMessagesDelivered(
+  io: SocketIoServer,
+  userId: string,
+  conversationIds: string[]
+) {
+  if (!conversationIds.length) return;
+  const pending = await Message.find({
+    conversationId: { $in: conversationIds },
+    senderId: { $ne: userId },
+    deliveredTo: { $ne: userId },
+    ...visibleMessageFilter(),
+  }).select("_id conversationId").lean();
+
+  if (!pending.length) return;
+  await Message.updateMany(
+    { _id: { $in: pending.map((message) => message._id) } },
+    { $addToSet: { deliveredTo: userId } }
+  );
+
+  const messagesByConversation = new Map<string, string[]>();
+  for (const message of pending) {
+    const conversationId = String(message.conversationId);
+    const ids = messagesByConversation.get(conversationId) || [];
+    ids.push(String(message._id));
+    messagesByConversation.set(conversationId, ids);
+  }
+  for (const [conversationId, messageIds] of messagesByConversation) {
+    emitReceiptUpdate(io, conversationId, messageIds, { deliveredBy: userId });
+  }
+}
+
 export function registerChatEvents(socket: Socket, io: SocketIoServer) {
   socket.on("getConversationPresence", async (data: { conversationId?: string; userId?: string }) => {
     try {
@@ -279,6 +323,15 @@ export function registerChatEvents(socket: Socket, io: SocketIoServer) {
       const sender = await User.findById(userId).select("name avatar").lean();
       if (!sender) return fail(socket, "newMessage", "Sender not found");
 
+      const recipientIds = conversation.participants
+        .map((id) => id.toString())
+        .filter((id) => id !== userId);
+      const onlineRecipientIds = recipientIds.filter((recipientId) =>
+        Array.from(io.sockets.sockets.values()).some(
+          (client) => client.connected && String(client.data.userId) === recipientId
+        )
+      );
+
       const message: any = await Message.create({
         conversationId: conversation._id,
         senderId: userId,
@@ -287,6 +340,7 @@ export function registerChatEvents(socket: Socket, io: SocketIoServer) {
         messageType,
         audioDuration,
         readBy: [new Types.ObjectId(userId)],
+        deliveredTo: [userId, ...onlineRecipientIds].map((id) => new Types.ObjectId(id)),
         expiresAt: conversation.disappearingMessagesSeconds
           ? new Date(Date.now() + conversation.disappearingMessagesSeconds * 1000)
           : null,
@@ -307,11 +361,10 @@ export function registerChatEvents(socket: Socket, io: SocketIoServer) {
           createdAt: message.createdAt,
           expiresAt: message.expiresAt,
           conversationId: conversation._id.toString(),
+          readBy: [userId],
+          deliveredTo: [userId, ...onlineRecipientIds],
         },
       });
-      const recipientIds = conversation.participants
-        .map((id) => id.toString())
-        .filter((id) => id !== userId);
       const pushRecipientIds = recipientIds.filter((recipientId) => {
         const appIsOpen = Array.from(io.sockets.sockets.values()).some(
           (client) => client.connected
@@ -371,6 +424,12 @@ export function registerChatEvents(socket: Socket, io: SocketIoServer) {
       const conversation = await memberConversation(data?.conversationId, userId);
       if (!conversation) return fail(socket, "getMessages", "Conversation not found");
 
+      const newlyReadMessages = await Message.find({
+        conversationId: conversation._id,
+        senderId: { $ne: userId },
+        readBy: { $ne: userId },
+        ...visibleToUserFilter(conversation, userId),
+      }).select("_id").lean();
       await Message.updateMany(
         {
           conversationId: conversation._id,
@@ -378,7 +437,13 @@ export function registerChatEvents(socket: Socket, io: SocketIoServer) {
           readBy: { $ne: userId },
           ...visibleToUserFilter(conversation, userId),
         },
-        { $addToSet: { readBy: userId } }
+        { $addToSet: { readBy: userId, deliveredTo: userId } }
+      );
+      emitReceiptUpdate(
+        io,
+        conversation._id.toString(),
+        newlyReadMessages.map((message) => String(message._id)),
+        { deliveredBy: userId, readBy: userId }
       );
       notifyUnreadChanged(io, [userId]);
 
@@ -409,6 +474,40 @@ export function registerChatEvents(socket: Socket, io: SocketIoServer) {
     }
   });
 
+  socket.on("markMessagesRead", async (data: { conversationId?: string; messageIds?: string[] }) => {
+    try {
+      const userId = String(socket.data.userId);
+      const conversation = await memberConversation(data?.conversationId, userId);
+      const messageIds = Array.isArray(data?.messageIds)
+        ? [...new Set(data.messageIds.map(String))].filter(isValidObjectId).slice(0, 100)
+        : [];
+      if (!conversation || !messageIds.length) return;
+
+      const newlyReadMessages = await Message.find({
+        _id: { $in: messageIds },
+        conversationId: conversation._id,
+        senderId: { $ne: userId },
+        readBy: { $ne: userId },
+        ...visibleToUserFilter(conversation, userId),
+      }).select("_id").lean();
+      if (!newlyReadMessages.length) return;
+
+      await Message.updateMany(
+        { _id: { $in: newlyReadMessages.map((message) => message._id) } },
+        { $addToSet: { readBy: userId, deliveredTo: userId } }
+      );
+      emitReceiptUpdate(
+        io,
+        conversation._id.toString(),
+        newlyReadMessages.map((message) => String(message._id)),
+        { deliveredBy: userId, readBy: userId }
+      );
+      notifyUnreadChanged(io, [userId]);
+    } catch (error) {
+      console.error("markMessagesRead error", error);
+    }
+  });
+
   socket.on("getConversationSettings", async (data: { conversationId?: string }) => {
     try {
       const userId = String(socket.data.userId);
@@ -422,6 +521,7 @@ export function registerChatEvents(socket: Socket, io: SocketIoServer) {
           disappearingMessagesSeconds: conversation.disappearingMessagesSeconds || 0,
           type: conversation.type,
           createdBy: conversation.createdBy?.toString() || null,
+          participantIds: conversation.participants.map((participantId) => participantId.toString()),
         },
       });
     } catch (error) {

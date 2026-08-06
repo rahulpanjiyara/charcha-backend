@@ -9,11 +9,15 @@ type LiveRoom = {
   id: string;
   title: string;
   hostId: string;
+  roomType: "audio" | "video";
   participants: Map<string, RoomParticipant>;
   createdAt: Date;
 };
 
 const liveRooms = new Map<string, LiveRoom>();
+const AUDIO_ROOM_CAPACITY = 4;
+const VIDEO_ROOM_CAPACITY = 4;
+const roomCapacity = (roomType: LiveRoom["roomType"]) => roomType === "video" ? VIDEO_ROOM_CAPACITY : AUDIO_ROOM_CAPACITY;
 
 function emitToUser(io: SocketIoServer, userId: string, event: string, payload: unknown) {
   for (const client of io.sockets.sockets.values()) {
@@ -33,9 +37,10 @@ const roomPayload = (room: LiveRoom) => ({
   id: room.id,
   title: room.title,
   hostId: room.hostId,
+  roomType: room.roomType,
   participants: [...room.participants.values()],
   participantCount: room.participants.size,
-  maxParticipants: 4,
+  maxParticipants: roomCapacity(room.roomType),
   createdAt: room.createdAt,
 });
 
@@ -70,12 +75,13 @@ export function registerLiveRoomEvents(socket: Socket, io: SocketIoServer) {
     }
   });
 
-  socket.on("createLiveRoom", async (data: { title?: string }) => {
+  socket.on("createLiveRoom", async (data: { title?: string; roomType?: "audio" | "video" }) => {
     try {
       const userId = String(socket.data.userId);
       const existing = [...liveRooms.values()].find((room) => room.participants.has(userId));
       if (existing) return socket.emit("createLiveRoom", { success: false, msg: "Leave your current room first" });
       const title = String(data?.title || "").trim().slice(0, 80);
+      const roomType: LiveRoom["roomType"] = data?.roomType === "video" ? "video" : "audio";
       if (!title) return socket.emit("createLiveRoom", { success: false, msg: "Give your room a title" });
       const user = await User.findById(userId).select("name avatar").lean();
       if (!user) return socket.emit("createLiveRoom", { success: false, msg: "User not found" });
@@ -83,6 +89,7 @@ export function registerLiveRoomEvents(socket: Socket, io: SocketIoServer) {
         id: randomUUID(),
         title,
         hostId: userId,
+        roomType,
         participants: new Map([[userId, { id: userId, name: user.name || "Friend", avatar: user.avatar || "" }]]),
         createdAt: new Date(),
       };
@@ -95,7 +102,7 @@ export function registerLiveRoomEvents(socket: Socket, io: SocketIoServer) {
         actorId: userId,
         type: "live_room",
         title: "A Live Room is open",
-        body: `${user.name} started “${title}”`,
+        body: `${user.name} started a ${roomType} room · “${title}”`,
         data: { url: "/(main)/liveRooms", roomId: room.id },
       });
     } catch (error) {
@@ -110,7 +117,7 @@ export function registerLiveRoomEvents(socket: Socket, io: SocketIoServer) {
       const room = data?.roomId ? liveRooms.get(data.roomId) : null;
       if (!room) return socket.emit("joinLiveRoom", { success: false, msg: "This room has ended" });
       if (room.participants.has(userId)) return socket.emit("joinLiveRoom", { success: true, data: roomPayload(room) });
-      if (room.participants.size >= 4) return socket.emit("joinLiveRoom", { success: false, msg: "This room is full" });
+      if (room.participants.size >= roomCapacity(room.roomType)) return socket.emit("joinLiveRoom", { success: false, msg: "This room is full" });
       const friendIds = await friendIdsFor(room.hostId);
       if (!friendIds.includes(userId)) return socket.emit("joinLiveRoom", { success: false, msg: "This room is for the host’s friends" });
       const user = await User.findById(userId).select("name avatar").lean();

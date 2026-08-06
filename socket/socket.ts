@@ -5,7 +5,7 @@ import { Server as SocketIoServer, Socket } from "socket.io";
 import jwt from "jsonwebtoken";
 import Conversation from "../modals/Conversation.js";
 import { registerUserEvents } from "./userEvents.js";
-import { registerChatEvents } from "./chatEvents.js";
+import { markUserMessagesDelivered, registerChatEvents } from "./chatEvents.js";
 import { registerCallEvents } from "./callEvents.js";
 import { registerLiveRoomEvents } from "./liveRoomEvents.js";
 
@@ -73,6 +73,12 @@ export function initializeSocket(server: any): SocketIoServer {
       conversations.forEach((conversation) => {
         socket.join(conversation._id.toString());
       });
+
+      await markUserMessagesDelivered(
+        io,
+        String(userId),
+        conversations.map((conversation) => conversation._id.toString())
+      );
 
       console.log(
         `📥 User ${userId} joined ${conversations.length} conversations`
