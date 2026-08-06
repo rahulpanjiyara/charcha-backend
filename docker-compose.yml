@@ -3,7 +3,9 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    image: charcha-backend:latest
+    # Versioned tag forces Hostinger's GitHub deployment to build this source
+    # instead of silently reusing an older local `latest` image.
+    image: charcha-backend:105a79f
     container_name: charcha-backend
     restart: unless-stopped
     init: true
