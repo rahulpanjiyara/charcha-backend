@@ -276,6 +276,18 @@ export function registerCallEvents(socket: Socket, io: SocketIoServer) {
     emitToUser(io, otherUserId, "webrtcSignal", signal);
   });
 
+  socket.on("callMediaState", (data: { callId?: string; microphoneEnabled?: boolean; cameraEnabled?: boolean }) => {
+    const call = data?.callId ? pendingCalls.get(data.callId) : null;
+    const userId = String(socket.data.userId);
+    if (!call || !call.accepted || (call.callerId !== userId && call.calleeId !== userId)) return;
+    const otherUserId = call.callerId === userId ? call.calleeId : call.callerId;
+    emitToUser(io, otherUserId, "callMediaState", {
+      callId: call.callId,
+      microphoneEnabled: data.microphoneEnabled !== false,
+      cameraEnabled: data.cameraEnabled !== false,
+    });
+  });
+
   socket.on("endVideoCall", (data: { callId?: string }) => {
     const call = data?.callId ? pendingCalls.get(data.callId) : null;
     const userId = String(socket.data.userId);

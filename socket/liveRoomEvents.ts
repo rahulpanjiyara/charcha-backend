@@ -188,6 +188,18 @@ export function registerLiveRoomEvents(socket: Socket, io: SocketIoServer) {
     emitToUser(io, data.targetUserId, "liveRoomSignal", { roomId: room.id, fromUserId: userId, type: data.type, payload: data.payload });
   });
 
+  socket.on("liveRoomMediaState", (data: { roomId?: string; targetUserId?: string; microphoneEnabled?: boolean; cameraEnabled?: boolean }) => {
+    const userId = String(socket.data.userId);
+    const room = data?.roomId ? liveRooms.get(data.roomId) : null;
+    if (!room || !room.participants.has(userId) || !data.targetUserId || !room.participants.has(data.targetUserId)) return;
+    emitToUser(io, data.targetUserId, "liveRoomMediaState", {
+      roomId: room.id,
+      fromUserId: userId,
+      microphoneEnabled: data.microphoneEnabled !== false,
+      cameraEnabled: data.cameraEnabled !== false,
+    });
+  });
+
   socket.on("leaveLiveRoom", (data: { roomId?: string }) => {
     const room = data?.roomId ? liveRooms.get(data.roomId) : null;
     if (room) leaveRoom(io, room, String(socket.data.userId));
