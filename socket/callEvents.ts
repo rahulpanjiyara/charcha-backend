@@ -12,6 +12,13 @@ type PendingCall = {
   caller: { id: string; name: string; avatar: string | null };
   callType: "audio" | "video";
   accepted: boolean;
+  signalBacklog: Array<{
+    signalId: string;
+    fromUserId: string;
+    toUserId: string;
+    type: "offer" | "answer" | "ice";
+    payload: unknown;
+  }>;
   timeout: NodeJS.Timeout;
 };
 
@@ -102,6 +109,7 @@ export function registerCallEvents(socket: Socket, io: SocketIoServer) {
         caller: callerInfo,
         callType,
         accepted: false,
+        signalBacklog: [],
         timeout,
       });
 
@@ -145,7 +153,7 @@ export function registerCallEvents(socket: Socket, io: SocketIoServer) {
     }
   });
 
-  socket.on("resumeVideoCall", (data: { callId?: string }) => {
+  socket.on("resumeVideoCall", (data: { callId?: string; replaySignals?: boolean }) => {
     const userId = String(socket.data.userId);
     const call = data?.callId
       ? pendingCalls.get(data.callId)
@@ -165,6 +173,17 @@ export function registerCallEvents(socket: Socket, io: SocketIoServer) {
         isInitiator: false,
         callType: call.callType,
       });
+      if (data?.replaySignals) {
+        for (const signal of call.signalBacklog) {
+          if (signal.toUserId !== userId) continue;
+          socket.emit("webrtcSignal", {
+            callId: call.callId,
+            signalId: signal.signalId,
+            type: signal.type,
+            payload: signal.payload,
+          });
+        }
+      }
     }
   });
 
@@ -220,11 +239,21 @@ export function registerCallEvents(socket: Socket, io: SocketIoServer) {
     ) return;
 
     const otherUserId = call.callerId === userId ? call.calleeId : call.callerId;
-    emitToUser(io, otherUserId, "webrtcSignal", {
+    const signal = {
       callId: call.callId,
-      type: data.type,
+      signalId: randomUUID(),
+      type: data.type as "offer" | "answer" | "ice",
       payload: data.payload,
+    };
+    call.signalBacklog.push({
+      ...signal,
+      fromUserId: userId,
+      toUserId: otherUserId,
     });
+    if (call.signalBacklog.length > 128) {
+      call.signalBacklog.splice(0, call.signalBacklog.length - 128);
+    }
+    emitToUser(io, otherUserId, "webrtcSignal", signal);
   });
 
   socket.on("endVideoCall", (data: { callId?: string }) => {
