@@ -108,7 +108,12 @@ export function registerLiveRoomEvents(socket: Socket, io: SocketIoServer) {
         type: "live_room",
         title: "A Live Room is open",
         body: `${user.name} started a ${roomType} room · “${title}”`,
-        data: { url: "/(main)/liveRooms", roomId: room.id },
+        data: {
+          url: "/(main)/liveRooms",
+          roomId: room.id,
+          autoJoin: "0",
+          notificationMode: "room_available",
+        },
       });
       if (inviteeIds.length) {
         const invitePayload = {
