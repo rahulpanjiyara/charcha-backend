@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import type { Server as SocketIoServer, Socket } from "socket.io";
 import FriendRequest from "../modals/FriendRequest.js";
 import User from "../modals/User.js";
-import { createActivities } from "../utils/notifications.js";
+import { createActivities, sendPushToUsers } from "../utils/notifications.js";
 
 type RoomParticipant = { id: string; name: string; avatar: string };
 type LiveRoom = {
@@ -75,7 +75,7 @@ export function registerLiveRoomEvents(socket: Socket, io: SocketIoServer) {
     }
   });
 
-  socket.on("createLiveRoom", async (data: { title?: string; roomType?: "audio" | "video" }) => {
+  socket.on("createLiveRoom", async (data: { title?: string; roomType?: "audio" | "video"; inviteeIds?: string[] }) => {
     try {
       const userId = String(socket.data.userId);
       const existing = [...liveRooms.values()].find((room) => room.participants.has(userId));
@@ -85,6 +85,11 @@ export function registerLiveRoomEvents(socket: Socket, io: SocketIoServer) {
       if (!title) return socket.emit("createLiveRoom", { success: false, msg: "Give your room a title" });
       const user = await User.findById(userId).select("name avatar").lean();
       if (!user) return socket.emit("createLiveRoom", { success: false, msg: "User not found" });
+      const friendIds = await friendIdsFor(userId);
+      const friendIdSet = new Set(friendIds);
+      const inviteeIds = [...new Set(Array.isArray(data?.inviteeIds) ? data.inviteeIds.map(String) : [])]
+        .filter((inviteeId) => friendIdSet.has(inviteeId))
+        .slice(0, roomCapacity(roomType) - 1);
       const room: LiveRoom = {
         id: randomUUID(),
         title,
@@ -96,15 +101,51 @@ export function registerLiveRoomEvents(socket: Socket, io: SocketIoServer) {
       liveRooms.set(room.id, room);
       socket.emit("createLiveRoom", { success: true, data: roomPayload(room) });
       emitRoomsChanged(io);
-      const friendIds = await friendIdsFor(userId);
       void createActivities({
         recipientIds: friendIds,
+        pushRecipientIds: friendIds.filter((friendId) => !inviteeIds.includes(friendId)),
         actorId: userId,
         type: "live_room",
         title: "A Live Room is open",
         body: `${user.name} started a ${roomType} room · “${title}”`,
         data: { url: "/(main)/liveRooms", roomId: room.id },
       });
+      if (inviteeIds.length) {
+        const invitePayload = {
+          roomId: room.id,
+          roomType,
+          title,
+          host: { id: userId, name: user.name || "Friend", avatar: user.avatar || null },
+        };
+        for (const inviteeId of inviteeIds) emitToUser(io, inviteeId, "liveRoomInvite", invitePayload);
+        const callPushData = {
+          type: `live_room_${roomType}_call`,
+          callId: `live-room:${room.id}`,
+          roomId: room.id,
+          callType: roomType,
+          callerId: userId,
+          callerName: user.name || "Friend",
+          callerAvatar: user.avatar || null,
+          url: "/(main)/liveRooms",
+          autoJoin: "1",
+        };
+        await Promise.all([
+          sendPushToUsers(
+            inviteeIds,
+            `${user.name || "A friend"} invited you`,
+            `Incoming ${roomType} Live Room call · Tap to answer`,
+            callPushData,
+            { headless: true, ttl: 45, tokenMode: "native" },
+          ),
+          sendPushToUsers(
+            inviteeIds,
+            `${user.name || "A friend"} invited you`,
+            `Incoming ${roomType} Live Room call · Tap to answer`,
+            callPushData,
+            { ttl: 45, tokenMode: "legacy" },
+          ),
+        ]);
+      }
     } catch (error) {
       console.error("createLiveRoom error", error);
       socket.emit("createLiveRoom", { success: false, msg: "Could not start this room" });
