@@ -30,6 +30,13 @@ function emitToUser(io: SocketIoServer, userId: string, event: string, payload: 
   }
 }
 
+function hasConnectedClient(io: SocketIoServer, userId: string, exceptSocketId?: string) {
+  for (const client of io.sockets.sockets.values()) {
+    if (client.id !== exceptSocketId && client.connected && String(client.data.userId) === userId) return true;
+  }
+  return false;
+}
+
 export function registerCallEvents(socket: Socket, io: SocketIoServer) {
   socket.on("getIceServers", (acknowledge?: (response: unknown) => void) => {
     if (typeof acknowledge !== "function") return;
@@ -279,10 +286,17 @@ export function registerCallEvents(socket: Socket, io: SocketIoServer) {
     for (const call of pendingCalls.values()) {
       if (call.callerId !== userId && call.calleeId !== userId) continue;
       if (!call.accepted && call.calleeId === userId) continue;
-      clearTimeout(call.timeout);
-      const otherUserId = call.callerId === userId ? call.calleeId : call.callerId;
-      emitToUser(io, otherUserId, "callEnded", { callId: call.callId, reason: "Connection lost" });
-      pendingCalls.delete(call.callId);
+      if (hasConnectedClient(io, userId, socket.id)) continue;
+
+      const disconnectedCallId = call.callId;
+      setTimeout(() => {
+        const currentCall = pendingCalls.get(disconnectedCallId);
+        if (!currentCall || !currentCall.accepted || hasConnectedClient(io, userId)) return;
+        clearTimeout(currentCall.timeout);
+        const otherUserId = currentCall.callerId === userId ? currentCall.calleeId : currentCall.callerId;
+        emitToUser(io, otherUserId, "callEnded", { callId: currentCall.callId, reason: "Connection lost" });
+        pendingCalls.delete(currentCall.callId);
+      }, 8_000);
     }
   });
 }
