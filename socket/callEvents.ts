@@ -235,6 +235,7 @@ export function registerCallEvents(socket: Socket, io: SocketIoServer) {
     callId?: string;
     type?: "offer" | "answer" | "ice";
     payload?: unknown;
+    fallbackOffer?: boolean;
   }) => {
     const call = data?.callId ? pendingCalls.get(data.callId) : null;
     const userId = String(socket.data.userId);
@@ -246,6 +247,18 @@ export function registerCallEvents(socket: Socket, io: SocketIoServer) {
     ) return;
 
     const otherUserId = call.callerId === userId ? call.calleeId : call.callerId;
+    if (data.type === "offer" && data.fallbackOffer && userId === call.calleeId) {
+      // An older caller may miss its first callAccepted event while the
+      // receiver is being restored from Android's native call UI. Re-announce
+      // the call before relaying the receiver's fallback offer so that client
+      // can create a peer and drain the queued offer.
+      emitToUser(io, call.callerId, "callAccepted", {
+        callId: call.callId,
+        conversationId: call.conversationId,
+        isInitiator: false,
+        callType: call.callType,
+      });
+    }
     const signal = {
       callId: call.callId,
       signalId: randomUUID(),
